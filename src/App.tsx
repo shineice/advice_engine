@@ -1,12 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { 
-  FileUp, 
-  ShieldCheck, 
-  BarChart3, 
-  AlertCircle, 
-  CheckCircle2, 
-  ArrowRight, 
+import {
+  FileUp,
+  ShieldCheck,
+  BarChart3,
+  AlertCircle,
+  CheckCircle2,
+  ArrowRight,
   Loader2,
   FileText,
   Search,
@@ -16,12 +16,12 @@ import {
   LayoutDashboard,
   ClipboardCheck
 } from 'lucide-react';
-import { 
-  Radar, 
-  RadarChart, 
-  PolarGrid, 
-  PolarAngleAxis, 
-  PolarRadiusAxis, 
+import {
+  Radar,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
   ResponsiveContainer,
   BarChart,
   Bar,
@@ -59,7 +59,11 @@ export default function App() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'application/pdf': ['.pdf'] },
+    accept: {
+      'application/pdf': ['.pdf'],
+      'text/markdown': ['.md', '.markdown'],
+      'text/plain': ['.txt']
+    },
     multiple: false,
     noClick: false,
     noKeyboard: false
@@ -68,40 +72,27 @@ export default function App() {
   const handleAnalyze = async () => {
     if (!file) return;
 
-    if (file.size > 15 * 1024 * 1024) {
-      setError('檔案過大（超過 15MB），請嘗試壓縮 PDF 或上傳較小的版本以確保分析穩定性。');
+    if (file.size > 50 * 1024 * 1024) {
+      setError('檔案過大（超過 50MB），為了穩定性，請上傳小於 50MB 的 PDF 或 Markdown 檔案。');
       return;
     }
 
     setIsAnalyzing(true);
     setError(null);
-    
+
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        try {
-          const base64 = (reader.result as string).split(',')[1];
-          const analysisResult = await analyzeESGReport(base64, framework);
-          setResult(analysisResult);
-          setIsAnalyzing(false);
-        } catch (err: any) {
-          console.error('Analysis Error:', err);
-          const errorMessage = err.message || JSON.stringify(err);
-          
-          if (errorMessage.includes('xhr error') || errorMessage.includes('500') || errorMessage.includes('ProxyUnaryCall')) {
-            setError('連線逾時或 AI 服務暫時無法處理此大型檔案。建議：1. 檢查網路連線 2. 嘗試較小的 PDF 檔案 3. 稍後再試。');
-          } else if (errorMessage.includes('API_KEY')) {
-            setError('API 金鑰設定錯誤，請聯繫管理員。');
-          } else {
-            setError(`分析失敗: ${errorMessage}`);
-          }
-          setIsAnalyzing(false);
-        }
-      };
-    } catch (err) {
-      console.error('File Read Error:', err);
-      setError('讀取檔案時發生錯誤。');
+      const analysisResult = await analyzeESGReport(file, framework);
+      setResult(analysisResult);
+      setIsAnalyzing(false);
+    } catch (err: any) {
+      console.error('Analysis Error:', err);
+      const errorMessage = err.message || JSON.stringify(err);
+
+      if (errorMessage.includes('xhr error') || errorMessage.includes('500') || errorMessage.includes('Failed to fetch')) {
+        setError('連線逾時或是後端服務無法處理此大型檔案。建議：1. 檢查伺服器是否啟動 2. 嘗試稍後再試。');
+      } else {
+        setError(`分析失敗: ${errorMessage}`);
+      }
       setIsAnalyzing(false);
     }
   };
@@ -115,7 +106,7 @@ export default function App() {
   if (isAnalyzing) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="text-center max-w-md"
@@ -147,7 +138,7 @@ export default function App() {
               </div>
               <h1 className="text-xl font-bold text-slate-900">AI ESG 永續評估引擎</h1>
             </div>
-            <button 
+            <button
               onClick={reset}
               className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
             >
@@ -160,7 +151,7 @@ export default function App() {
           {/* Dashboard Summary */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
             {/* Score Card */}
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center justify-center text-center"
@@ -208,7 +199,7 @@ export default function App() {
             </motion.div>
 
             {/* Radar Chart */}
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               className="lg:col-span-2 bg-white p-8 rounded-2xl shadow-sm border border-slate-200"
@@ -248,8 +239,8 @@ export default function App() {
                 onClick={() => setActiveTab(tab.id as any)}
                 className={cn(
                   "flex items-center gap-2 px-6 py-4 text-sm font-medium border-b-2 transition-all whitespace-nowrap",
-                  activeTab === tab.id 
-                    ? "border-emerald-600 text-emerald-600" 
+                  activeTab === tab.id
+                    ? "border-emerald-600 text-emerald-600"
                     : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"
                 )}
               >
@@ -369,8 +360,8 @@ export default function App() {
                             <div className={cn(
                               "inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold",
                               q.score >= 80 ? "bg-emerald-100 text-emerald-700" :
-                              q.score >= 50 ? "bg-amber-100 text-amber-700" :
-                              "bg-red-100 text-red-700"
+                                q.score >= 50 ? "bg-amber-100 text-amber-700" :
+                                  "bg-red-100 text-red-700"
                             )}>
                               {q.score}
                             </div>
@@ -484,8 +475,8 @@ export default function App() {
               onClick={() => setFramework('CSA')}
               className={cn(
                 "px-8 py-3 rounded-xl text-sm font-bold transition-all border-2",
-                framework === 'CSA' 
-                  ? "bg-slate-900 border-slate-900 text-white shadow-lg" 
+                framework === 'CSA'
+                  ? "bg-slate-900 border-slate-900 text-white shadow-lg"
                   : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
               )}
             >
@@ -495,8 +486,8 @@ export default function App() {
               onClick={() => setFramework('CDP')}
               className={cn(
                 "px-8 py-3 rounded-xl text-sm font-bold transition-all border-2",
-                framework === 'CDP' 
-                  ? "bg-slate-900 border-slate-900 text-white shadow-lg" 
+                framework === 'CDP'
+                  ? "bg-slate-900 border-slate-900 text-white shadow-lg"
                   : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
               )}
             >
@@ -505,8 +496,8 @@ export default function App() {
           </div>
 
           {/* Upload Area */}
-          <div 
-            {...getRootProps()} 
+          <div
+            {...getRootProps()}
             className={cn(
               "relative group cursor-pointer max-w-xl mx-auto",
               "p-12 border-2 border-dashed rounded-3xl transition-all",
@@ -528,15 +519,15 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <p className="text-slate-900 font-bold mb-2">點擊或拖拽永續報告書 PDF 至此</p>
-                  <p className="text-slate-400 text-sm">支援 PDF 格式，建議檔案大小不超過 20MB</p>
+                  <p className="text-slate-900 font-bold mb-2">點擊或拖拽永續報告書 PDF/MD 至此</p>
+                  <p className="text-slate-400 text-sm">支援 PDF 或 Markdown 格式，上限 50MB</p>
                 </>
               )}
             </div>
           </div>
 
           {file && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               className="mt-8"
