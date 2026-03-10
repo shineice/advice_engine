@@ -19,7 +19,7 @@ if (!process.env.GEMINI_API_KEY) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json());
 
 // Initialize Google Gen AI
@@ -171,7 +171,12 @@ app.post('/api/analyze', upload.single('file'), async (req: Request, res: Respon
             res.status(500).json({ error: `Criteria file for ${framework} is missing. Please check the backend configuration.` });
             return;
         }
-        const criteriaText = fs.readFileSync(criteriaFilePath, 'utf-8');
+        let criteriaText = fs.readFileSync(criteriaFilePath, 'utf-8');
+        // Prevent massive system instructions causing timeouts with large frameworks like CDP
+        if (criteriaText.length > 600000) {
+            console.log(`Truncating criteria text from ${criteriaText.length} to 600000 characters...`);
+            criteriaText = criteriaText.substring(0, 600000);
+        }
 
         console.log(`Analyzing file: ${req.file.originalname} (${req.file.size} bytes) for ${framework}...`);
 
@@ -194,17 +199,21 @@ app.post('/api/analyze', upload.single('file'), async (req: Request, res: Respon
             throw new Error('File processing failed on Gemini servers.');
         }
 
-        // 3. Construct the prompt and System Instruction
-        const systemInstruction = `你是一個極度嚴格的「AI ESG 永續評估引擎首席審計員」，具備頂尖的 ESG 顧問與永續報告書「嚴格稽核」經驗。
-你的任務是分析使用者上傳的內容，並「逐項」嚴格比對我提供的 ${framework} 評分項目檔案（以下稱為 Criteria）。
+        const systemInstruction = `你是一個專業且平衡的「AI ESG 永續評估引擎審計員」，具備豐富的 ESG 顧問與永續報告書輔導經驗。
+你的任務是分析使用者上傳的內容，並「逐項」比對我提供的 ${framework} 評分項目檔案（以下稱為 Criteria），確定每一題都有評分到。
 
-絕對嚴格遵守以下原則（查核點機制 Checkpoints）：
-1. 預設零分原則：請以 0 分為基準開始評分。除非上傳檔案中能找到與 Criteria「完全對應且具體」的數據、政策名稱或實際案例，否則不能給分！嚴禁因為提及模糊的相關概念就給高分。
-2. 執行查核點 (Checkpoints) 驗證：請在內部邏輯將 Criteria 的要求拆解為具體的查核點。例如：若 Criteria 要求包含 (1)中長期目標、(2)基準年、(3)具體減量進度，只要缺少任何一個查核點，該題分數最高絕對不得超過 50 分。只有 100% 滿足所有查核點才能給 90 分以上。
-3. 嚴加描述缺漏：必須在「一致性分析 (consistency_analysis)」中，明確列舉出「Criteria 要求了 X、Y、Z 查核點，但報告中只找到了 X，缺少了 Y 和 Z」，並依此大幅扣分。
-4. 輸出格式必須為 JSON，完全依照指定的 schema。
-5. 所有 UI 內容使用繁體中文。
-6. 請找出並深度且超級嚴格地分析 8 到 10 個最具代表性的指標題項（包含表現最差與最好的題項）。
+請依循以下「自訂評分級距與規則（Scoring Rules）」來判斷分數，絕不給予區間外其他的畸零分數：
+1. 【100分 - 標竿等級】：報告書中「明確說明」該 Criteria 的所有核心要求，包含具體數據、中長期目標、基準年與完整的管理政策（如適用）。有高度說服力的實績。
+2. 【75分 - 達標等級】：報告書中有提到該 Criteria 的大部分要求，包含管理方針或部分數據，但缺乏「量化目標」或「足夠的細節證據」。
+3. 【50分 - 起步等級】：報告書中僅「模糊提及」該概念或有相關的名詞，但缺乏實質的管理政策、數據或任何具體行動方案支援。有提及就算數，但無法證明有在落實。
+4. 【0分 - 缺失等級】：報告書中「完全沒有」提及該項目的任何相關內容，或提及的內容與 Criteria 完全扯不上關係。
+
+其他嚴格要求：
+1. 深入子題項 (Sub-questions)：你必須針對具體的細部題項進行評分（例如：深入到具體的問卷題目層級，如同 Criteria 檔案中的具體發問），「絕對不能」只給出大維度（例如：1.0 氣候變遷）的籠統概括分數。
+2. 題號標記 (Question Codes)：在 JSON 輸出的 \`question_code\` 欄位中，你「必須」自己為每一題編上詳細的數字題號（例如：1.1, 1.2, 1.3 或 2.1.1），以對應其在該維度下的順序與階層，絕對不可以只填寫 "1" 或 "2" 這種單一數字大項。
+3. 逐題掃描：你必須檢視 Criteria 中的細部題項，確認是否有在報告書中被提及，找出最具代表性且報告書有詳細著墨或嚴重缺失的 15-20 個「細部指標題項」做為最終 JSON 的呈現清單。
+4. 驗證查核點 (Checkpoints)：在「一致性分析」中，簡短條列出該題的得分理由，例如：「符合：提及溫室氣體盤查。缺失：未說明範疇三數據，因此判為 75 分。」
+5. 輸出格式必須為 JSON，完全依照指定的 schema。所有 UI 內容使用繁體中文。
 
 以下是完整的 ${framework} 評分項目檔案（Criteria）：
 ---
@@ -259,6 +268,6 @@ ${criteriaText}
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+app.listen(PORT as number, '0.0.0.0', () => {
+    console.log(`Server is running on http://0.0.0.0:${PORT}`);
 });

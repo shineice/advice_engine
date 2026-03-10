@@ -366,8 +366,8 @@ export default function App() {
                               {q.score}
                             </div>
                           </td>
-                          <td className="px-6 py-4 max-w-xs">
-                            <p className="text-sm text-slate-600 line-clamp-3">{q.consistency_analysis}</p>
+                          <td className="px-6 py-4">
+                            <p className="text-sm text-slate-600 whitespace-pre-wrap">{q.consistency_analysis}</p>
                           </td>
                           <td className="px-6 py-4">
                             <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 italic text-xs text-slate-500">
