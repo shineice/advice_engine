@@ -44,66 +44,98 @@ type Framework = 'CDP' | 'CSA';
 
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
-  const [framework, setFramework] = useState<Framework>('CSA');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<ESGAnalysisResult | null>(null);
+  const [benchmarkFile, setBenchmarkFile] = useState<File | null>(null);
+  const [activeFramework, setActiveFramework] = useState<Framework>('CSA');
+  const [analyzingFramework, setAnalyzingFramework] = useState<Framework | null>(null);
+  const [results, setResults] = useState<Record<Framework, ESGAnalysisResult | null>>({ CSA: null, CDP: null });
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'summary' | 'scoring' | 'improvement'>('summary');
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
+  const currentResult = results[activeFramework];
+
+  const handleAnalyze = async (targetFramework: Framework, mainFile: File, optionalRefFile?: File | null) => {
+    if (mainFile.size > 50 * 1024 * 1024 || (optionalRefFile && optionalRefFile.size > 50 * 1024 * 1024)) {
+      setError('檔案過大（超過 50MB），為了穩定性，請上傳小於 50MB 的 PDF 或 Markdown 檔案。');
+      return;
+    }
+
+    setAnalyzingFramework(targetFramework);
+    setError(null);
+
+    try {
+      const analysisResult = await analyzeESGReport(mainFile, targetFramework, optionalRefFile || undefined);
+      setResults(prev => ({ ...prev, [targetFramework]: analysisResult }));
+      setAnalyzingFramework(null);
+    } catch (err: any) {
+      console.error('Analysis Error:', err);
+      const errorMessage = err.message || JSON.stringify(err);
+
+      if (errorMessage.includes('xhr error') || errorMessage.includes('Failed to fetch')) {
+        setError('連線逾時或是後端服務無回應。建議：1. 檢查伺服器是否啟動 2. 嘗試稍後再試。');
+      } else {
+        setError(`分析失敗: ${errorMessage}`);
+      }
+      setAnalyzingFramework(null);
+    }
+  };
+
+  const onMainDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
-      setFile(acceptedFiles[0]);
+      const uploadedFile = acceptedFiles[0];
+      setFile(uploadedFile);
       setError(null);
     }
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
+  const onBenchmarkDrop = useCallback((acceptedFiles: File[]) => {
+    if (acceptedFiles.length > 0) {
+      setBenchmarkFile(acceptedFiles[0]);
+    }
+  }, []);
+
+  const { getRootProps: getMainRootProps, getInputProps: getMainInputProps, isDragActive: isMainDragActive } = useDropzone({
+    onDrop: onMainDrop,
     accept: {
       'application/pdf': ['.pdf'],
       'text/markdown': ['.md', '.markdown'],
       'text/plain': ['.txt']
     },
-    multiple: false,
-    noClick: false,
-    noKeyboard: false
+    multiple: false
   });
 
-  const handleAnalyze = async () => {
-    if (!file) return;
+  const { getRootProps: getBenchmarkRootProps, getInputProps: getBenchmarkInputProps, isDragActive: isBenchmarkDragActive } = useDropzone({
+    onDrop: onBenchmarkDrop,
+    accept: {
+      'application/pdf': ['.pdf'],
+      'text/markdown': ['.md', '.markdown'],
+      'text/plain': ['.txt']
+    },
+    multiple: false
+  });
 
-    if (file.size > 50 * 1024 * 1024) {
-      setError('檔案過大（超過 50MB），為了穩定性，請上傳小於 50MB 的 PDF 或 Markdown 檔案。');
-      return;
+  const triggerAnalysis = () => {
+    if (file) {
+      handleAnalyze(activeFramework, file, benchmarkFile);
     }
+  };
 
-    setIsAnalyzing(true);
-    setError(null);
-
-    try {
-      const analysisResult = await analyzeESGReport(file, framework);
-      setResult(analysisResult);
-      setIsAnalyzing(false);
-    } catch (err: any) {
-      console.error('Analysis Error:', err);
-      const errorMessage = err.message || JSON.stringify(err);
-
-      if (errorMessage.includes('xhr error') || errorMessage.includes('500') || errorMessage.includes('Failed to fetch')) {
-        setError('連線逾時或是後端服務無法處理此大型檔案。建議：1. 檢查伺服器是否啟動 2. 嘗試稍後再試。');
-      } else {
-        setError(`分析失敗: ${errorMessage}`);
-      }
-      setIsAnalyzing(false);
+  const handleTabSwitch = (framework: Framework) => {
+    setActiveFramework(framework);
+    if (!results[framework] && file && !analyzingFramework) {
+      handleAnalyze(framework, file, benchmarkFile);
     }
   };
 
   const reset = () => {
     setFile(null);
-    setResult(null);
+    setBenchmarkFile(null);
+    setResults({ CSA: null, CDP: null });
     setError(null);
+    setActiveFramework('CSA');
+    setAnalyzingFramework(null);
   };
 
-  if (isAnalyzing) {
+  if (analyzingFramework === activeFramework) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
         <motion.div
@@ -118,7 +150,7 @@ export default function App() {
           <h2 className="text-2xl font-bold text-slate-900 mb-4">正在進行 ESG 深度評估...</h2>
           <div className="space-y-3 text-slate-500">
             <p className="animate-pulse-subtle">🔍 正在解析永續報告書文本與數據</p>
-            <p className="animate-pulse-subtle delay-75">⚖️ 依據 {framework} 框架進行合規性審查</p>
+            <p className="animate-pulse-subtle delay-75">⚖️ 依據 {analyzingFramework} 框架進行合規性審查</p>
             <p className="animate-pulse-subtle delay-150">📊 計算各維度評分與缺口分析</p>
           </div>
         </motion.div>
@@ -126,21 +158,56 @@ export default function App() {
     );
   }
 
-  if (result) {
+  if (currentResult) {
+    const result = currentResult;
     return (
       <div className="min-h-screen bg-slate-50">
         {/* Header */}
-        <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="bg-emerald-600 p-2 rounded-lg">
-                <ShieldCheck className="w-6 h-6 text-white" />
+        <header className="bg-white border-b border-slate-200 sticky top-0 z-10 p-2 sm:p-0">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-auto sm:h-16 py-3 sm:py-0 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6 w-full sm:w-auto">
+              <div className="flex items-center gap-3">
+                <div className="bg-emerald-600 p-2 rounded-lg hidden sm:block mt-1">
+                  <ShieldCheck className="w-5 h-5 text-white" />
+                </div>
+                <h1 className="text-xl font-bold text-slate-900 truncate hidden sm:block">AI ESG 引擎</h1>
               </div>
-              <h1 className="text-xl font-bold text-slate-900">AI ESG 永續評估引擎</h1>
+
+              {/* Framework Switcher (Global Top Bar) */}
+              <div className="flex bg-slate-100/80 p-1.5 rounded-xl border border-slate-200/60 shadow-inner max-w-md w-full sm:w-auto justify-center">
+                <button
+                  onClick={() => handleTabSwitch('CSA')}
+                  disabled={analyzingFramework === 'CSA'}
+                  className={cn(
+                    "flex-1 sm:flex-none px-6 py-2 rounded-lg text-sm font-bold transition-all relative",
+                    activeFramework === 'CSA'
+                      ? "bg-white text-emerald-700 shadow-sm border border-slate-200/50"
+                      : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                  )}
+                >
+                  S&P Global CSA
+                  {analyzingFramework === 'CSA' && <Loader2 className="w-4 h-4 animate-spin absolute right-2 top-2.5 opacity-50 text-emerald-600" />}
+                </button>
+                <div className="w-px bg-slate-200 my-2 mx-1 hidden sm:block"></div>
+                <button
+                  onClick={() => handleTabSwitch('CDP')}
+                  disabled={analyzingFramework === 'CDP'}
+                  className={cn(
+                    "flex-1 sm:flex-none px-6 py-2 rounded-lg text-sm font-bold transition-all relative",
+                    activeFramework === 'CDP'
+                      ? "bg-white text-emerald-700 shadow-sm border border-slate-200/50"
+                      : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                  )}
+                >
+                  CDP Climate
+                  {analyzingFramework === 'CDP' && <Loader2 className="w-4 h-4 animate-spin absolute right-2 top-2.5 opacity-50 text-emerald-600" />}
+                </button>
+              </div>
             </div>
+
             <button
               onClick={reset}
-              className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
+              className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors whitespace-nowrap bg-white px-4 py-2 rounded-lg border border-slate-200 shadow-sm sm:border-0 sm:shadow-none sm:bg-transparent"
             >
               重新上傳報告
             </button>
@@ -184,8 +251,17 @@ export default function App() {
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-5xl font-bold text-slate-900">{result.dashboard_summary.overall_score}</span>
-                  <span className="text-slate-400 font-medium">/ 100</span>
+                  {result.dashboard_summary.letter_grade ? (
+                    <>
+                      <span className="text-[3.5rem] font-black text-slate-900 leading-none">{result.dashboard_summary.letter_grade}</span>
+                      <span className="text-xs font-bold text-slate-400 mt-1">({result.dashboard_summary.overall_score} / 100)</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-5xl font-bold text-slate-900">{result.dashboard_summary.overall_score}</span>
+                      <span className="text-slate-400 font-medium">/ 100</span>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="mt-6 flex gap-4">
@@ -307,23 +383,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Keyword Gap Analysis */}
-                <div className="bg-slate-900 p-8 rounded-2xl text-white">
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-lg font-bold flex items-center gap-2">
-                      <Search className="w-5 h-5 text-emerald-400" />
-                      關鍵字缺口分析 (Keyword Gap)
-                    </h3>
-                    <span className="text-xs font-mono text-slate-400 uppercase tracking-widest">Missing Keywords</span>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                    {result.keyword_gap_analysis.missing_keywords.map((kw, i) => (
-                      <div key={i} className="p-3 bg-white/5 border border-white/10 rounded-lg text-sm font-mono text-slate-300 hover:bg-white/10 transition-colors">
-                        {kw}
-                      </div>
-                    ))}
-                  </div>
-                </div>
+
               </motion.div>
             )}
 
@@ -358,12 +418,12 @@ export default function App() {
                           </td>
                           <td className="px-6 py-4">
                             <div className={cn(
-                              "inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold",
-                              q.score >= 80 ? "bg-emerald-100 text-emerald-700" :
-                                q.score >= 50 ? "bg-amber-100 text-amber-700" :
+                              "inline-flex items-center justify-center min-w-[2.5rem] h-10 px-2 rounded-full text-sm font-bold",
+                              (q.letter_grade?.startsWith('A') || q.letter_grade?.startsWith('B') || q.score >= 80) ? "bg-emerald-100 text-emerald-700" :
+                                (q.letter_grade?.startsWith('C') || q.score >= 50) ? "bg-amber-100 text-amber-700" :
                                   "bg-red-100 text-red-700"
                             )}>
-                              {q.score}
+                              {q.letter_grade || q.score}
                             </div>
                           </td>
                           <td className="px-6 py-4">
@@ -391,6 +451,50 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-8"
               >
+                {/* Keyword & Terminology Adjustments */}
+                {result.keyword_gap_analysis?.adjustments && result.keyword_gap_analysis.adjustments.length > 0 && (
+                  <div className="bg-white p-8 rounded-2xl shadow-sm border border-amber-200">
+                    <h3 className="text-lg font-bold text-amber-900 mb-6 flex items-center gap-2">
+                      <span>✍️</span>純文字與關鍵字校準 (Wording & Terminology Adjustments)
+                    </h3>
+                    <p className="text-sm text-amber-700 mb-6">
+                      以下項目並非制度缺失，而是報告書中使用的意涵與準則字眼不夠吻合。建議直接抽換以下字詞以提高機器審查的命中率 (Keyword Match)。
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-amber-50 border-b border-amber-100">
+                            <th className="px-4 py-3 text-xs font-bold text-amber-700 uppercase tracking-wider w-24">關聯題項</th>
+                            <th className="px-4 py-3 text-xs font-bold text-amber-700 uppercase tracking-wider w-1/4">目前報告書用語</th>
+                            <th className="px-4 py-3 text-xs font-bold text-amber-700 uppercase tracking-wider w-1/4">標準要求關鍵字</th>
+                            <th className="px-4 py-3 text-xs font-bold text-amber-700 uppercase tracking-wider">調整原因說明</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-amber-50">
+                          {result.keyword_gap_analysis.adjustments.map((adj, i) => (
+                            <tr key={i} className="hover:bg-amber-50/30 transition-colors bg-white">
+                              <td className="px-4 py-4 whitespace-nowrap">
+                                <span className="font-mono text-xs font-bold text-amber-600 bg-amber-100 px-2 py-1 rounded">{adj.question_code}</span>
+                              </td>
+                              <td className="px-4 py-4">
+                                <div className="text-sm font-medium text-slate-500 line-through decoration-red-400/50">{adj.current_wording}</div>
+                              </td>
+                              <td className="px-4 py-4">
+                                <div className="text-sm font-bold text-emerald-700 bg-emerald-50 inline-block px-2 py-1 rounded border border-emerald-100">
+                                  {adj.required_keyword}
+                                </div>
+                              </td>
+                              <td className="px-4 py-4">
+                                <p className="text-sm text-slate-600">{adj.explanation}</p>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
                 {/* Improvement Actions */}
                 <div className="grid grid-cols-1 gap-6">
                   {result.improvement_path.improvement_actions.map((action, i) => (
@@ -412,6 +516,22 @@ export default function App() {
                           <div className="bg-white p-4 rounded-lg border border-slate-200 border-dashed">
                             <p className="text-xs text-slate-500 italic font-mono">{action.recommendation_en}</p>
                           </div>
+
+                          {action.benchmark_reference && (
+                            <div className="mt-6 bg-blue-50/50 p-5 rounded-xl border border-blue-200">
+                              <h5 className="flex items-center gap-2 text-sm font-bold text-blue-900 mb-3">
+                                <span>🏆</span>標竿對齊 ({action.benchmark_reference.company_name})
+                              </h5>
+                              <div className="space-y-3">
+                                <div className="bg-white p-3 rounded border border-blue-100 italic text-sm text-slate-600 border-l-4 border-l-blue-400">
+                                  "{action.benchmark_reference.excerpt}"
+                                </div>
+                                <p className="text-xs text-blue-800 leading-relaxed font-medium">
+                                  <span className="font-bold text-blue-900">AI 解析：</span>{action.benchmark_reference.explanation}
+                                </p>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -470,58 +590,84 @@ export default function App() {
           </p>
 
           {/* Framework Selector */}
-          <div className="flex items-center justify-center gap-4 mb-12">
+          <div className="flex items-center justify-center gap-4 mb-8">
             <button
-              onClick={() => setFramework('CSA')}
+              onClick={() => setActiveFramework('CSA')}
               className={cn(
                 "px-8 py-3 rounded-xl text-sm font-bold transition-all border-2",
-                framework === 'CSA'
+                activeFramework === 'CSA'
                   ? "bg-slate-900 border-slate-900 text-white shadow-lg"
                   : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
               )}
             >
-              S&P Global CSA
+              優先分析: S&P Global CSA
             </button>
             <button
-              onClick={() => setFramework('CDP')}
+              onClick={() => setActiveFramework('CDP')}
               className={cn(
                 "px-8 py-3 rounded-xl text-sm font-bold transition-all border-2",
-                framework === 'CDP'
+                activeFramework === 'CDP'
                   ? "bg-slate-900 border-slate-900 text-white shadow-lg"
                   : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
               )}
             >
-              CDP Climate Change
+              優先分析: CDP Climate Change
             </button>
           </div>
 
           {/* Upload Area */}
-          <div
-            {...getRootProps()}
-            className={cn(
-              "relative group cursor-pointer max-w-xl mx-auto",
-              "p-12 border-2 border-dashed rounded-3xl transition-all",
-              isDragActive ? "border-emerald-500 bg-emerald-50" : "border-slate-200 hover:border-emerald-400 hover:bg-slate-50"
-            )}
-          >
-            <input {...getInputProps()} />
-            <div className="flex flex-col items-center">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto mt-4">
+            <div
+              {...getMainRootProps()}
+              className={cn(
+                "relative group cursor-pointer p-8 border-2 border-dashed rounded-3xl transition-all h-full flex flex-col items-center justify-center",
+                isMainDragActive ? "border-emerald-500 bg-emerald-50" : file ? "border-emerald-300 bg-emerald-50/50" : "border-slate-300 hover:border-emerald-400 hover:bg-slate-50"
+              )}
+            >
+              <input {...getMainInputProps()} />
               <div className={cn(
-                "w-16 h-16 rounded-2xl flex items-center justify-center mb-6 transition-transform group-hover:scale-110",
-                isDragActive ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-400"
+                "w-14 h-14 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110",
+                file ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-400"
               )}>
-                <FileUp className="w-8 h-8" />
+                <FileUp className="w-6 h-6" />
               </div>
               {file ? (
                 <div className="text-center">
-                  <p className="text-slate-900 font-bold mb-1">{file.name}</p>
-                  <p className="text-slate-400 text-sm">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                  <p className="text-slate-900 font-bold mb-1 truncate max-w-[200px]">{file.name}</p>
+                  <p className="text-emerald-600 text-xs font-bold bg-emerald-100 px-2 py-1 rounded-md inline-block">主要報告書已就緒</p>
                 </div>
               ) : (
-                <>
-                  <p className="text-slate-900 font-bold mb-2">點擊或拖拽永續報告書 PDF/MD 至此</p>
-                  <p className="text-slate-400 text-sm">支援 PDF 或 Markdown 格式，上限 50MB</p>
-                </>
+                <div className="text-center">
+                  <p className="text-slate-900 font-bold mb-2">上傳主要報告書 (必填)</p>
+                  <p className="text-slate-400 text-xs">PDF 或 Markdown 格式</p>
+                </div>
+              )}
+            </div>
+
+            <div
+              {...getBenchmarkRootProps()}
+              className={cn(
+                "relative group cursor-pointer p-8 border-2 border-dashed rounded-3xl transition-all h-full flex flex-col items-center justify-center",
+                isBenchmarkDragActive ? "border-blue-500 bg-blue-50" : benchmarkFile ? "border-blue-300 bg-blue-50/50" : "border-slate-200 hover:border-blue-400 hover:bg-slate-50"
+              )}
+            >
+              <input {...getBenchmarkInputProps()} />
+              <div className={cn(
+                "w-14 h-14 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110",
+                benchmarkFile ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-400"
+              )}>
+                <FileUp className="w-6 h-6" />
+              </div>
+              {benchmarkFile ? (
+                <div className="text-center">
+                  <p className="text-slate-900 font-bold mb-1 truncate max-w-[200px]">{benchmarkFile.name}</p>
+                  <p className="text-blue-600 text-xs font-bold bg-blue-100 px-2 py-1 rounded-md inline-block">標竿報告書已就緒</p>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <p className="text-slate-900 font-bold mb-2">上傳標竿報告書 (選填)</p>
+                  <p className="text-slate-400 text-xs">用於給予 AI 參考好的作法</p>
+                </div>
               )}
             </div>
           </div>
@@ -530,14 +676,14 @@ export default function App() {
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mt-8"
+              className="mt-10"
             >
               <button
-                onClick={handleAnalyze}
-                disabled={isAnalyzing}
+                onClick={triggerAnalysis}
+                disabled={analyzingFramework !== null}
                 className="px-12 py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-bold shadow-xl shadow-emerald-200 transition-all flex items-center gap-3 mx-auto"
               >
-                開始 AI 永續評估分析
+                自動啟動 {activeFramework} 分析
                 <ArrowRight className="w-5 h-5" />
               </button>
             </motion.div>
