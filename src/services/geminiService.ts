@@ -17,6 +17,12 @@ export interface ESGAnalysisResult {
     question_name: string;
     dimension: string;
     score: number;
+    /** DJSI sub-option checklist: each item is one CSA criterion checkbox */
+    sub_options: {
+      option_text: string;
+      is_covered: boolean;
+      evidence: string;
+    }[];
     consistency_analysis: string;
     standard_requirement: string;
     evidence_excerpt: string;

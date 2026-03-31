@@ -177,19 +177,43 @@ const DIM_NAMES: Record<string, string> = {
 };
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
+const subOptionSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+        option_text: {
+            type: SchemaType.STRING,
+            description: '從 CSA Criteria 擷取的子選項內容（例如：「確信範圍涵蓋環境 KPI」）',
+        },
+        is_covered: {
+            type: SchemaType.BOOLEAN,
+            description: '報告書或公開網站中是否有「明確且具體」的對應描述（模糊提及或間接相關不算）',
+        },
+        evidence: {
+            type: SchemaType.STRING,
+            description: '若 is_covered=true，填入報告書原文佐證（50字以內）；is_covered=false 則填空字串',
+        },
+    },
+    required: ['option_text', 'is_covered', 'evidence'],
+};
+
 const scoringItemSchema = {
     type: SchemaType.OBJECT,
     properties: {
         question_code:        { type: SchemaType.STRING },
-        question_name:        { type: SchemaType.STRING },
+        question_name:        { type: SchemaType.STRING, description: '繁體中文題目簡稱（15字以內）' },
         dimension:            { type: SchemaType.STRING },
-        score:                { type: SchemaType.NUMBER },
-        consistency_analysis: { type: SchemaType.STRING },
-        standard_requirement: { type: SchemaType.STRING },
-        evidence_excerpt:     { type: SchemaType.STRING },
+        score:                { type: SchemaType.NUMBER, description: 'ROUND((is_covered=true 的數量 / sub_options 總數) × 100)' },
+        sub_options: {
+            type: SchemaType.ARRAY,
+            items: subOptionSchema,
+            description: '此題在 CSA Criteria 中的所有子選項，每項皆須逐一勾核',
+        },
+        consistency_analysis: { type: SchemaType.STRING, description: '整體一致性說明（80字以內）' },
+        standard_requirement: { type: SchemaType.STRING, description: 'CSA 對此題的核心要求（50字以內）' },
+        evidence_excerpt:     { type: SchemaType.STRING, description: '報告書中最具代表性的引用段落（60字以內）' },
         page_reference:       { type: SchemaType.STRING },
     },
-    required: ['question_code','question_name','dimension','score',
+    required: ['question_code','question_name','dimension','score','sub_options',
                'consistency_analysis','standard_requirement','evidence_excerpt','page_reference'],
 };
 
@@ -391,11 +415,27 @@ function safeParseJson(raw: string, label: string): any {
 
 // ─── Scoring Rules ────────────────────────────────────────────────────────────
 const csaScoringRules = `
-【評分規則】
-100分（標竿）：報告書明確且具體地說明該 Criteria 的所有核心要求
-75分（達標）：報告書有提到該 Criteria 的大部分要求
-50分（起步）：報告書僅模糊提及該概念或有相關名詞
-0分（缺失）：報告書完全沒有提及該項目`;
+【CSA / DJSI 子選項評分邏輯 — 請嚴格依照以下 5 個步驟執行】
+
+步驟 1：閱讀該題在 Criteria 中的「Question Layout」與「Assessment Focus」，
+        找出所有「評分子選項」（checkbox 項目或 sub-criteria）。
+        若 Criteria 沒有明確條列，請從題目要求中自行拆解出 3~8 個核心子要素。
+
+步驟 2：對每個子選項，在報告書（及上傳的公開網站內容，若有）中
+        逐字尋找是否有「明確且具體」的對應描述。
+        ✅ 算明確涵蓋：有清楚文字、數據、政策聲明或流程描述，可直接對應到該子選項
+        ❌ 不算明確涵蓋：模糊提及、間接相關、使用了相近但不夠精確的詞彙
+
+步驟 3：將每個子選項填入 sub_options 陣列：
+        - option_text：子選項的內容說明
+        - is_covered：true（明確涵蓋）或 false（未涵蓋）
+        - evidence：若 is_covered=true，填入報告書對應原文（50字以內）；false 則填空字串
+
+步驟 4：計算分數：
+        score = ROUND( (is_covered=true 的子選項數 / sub_options 總數) × 100 )
+        例：5 個子選項中有 3 個涵蓋 → score = 60
+
+步驟 5：consistency_analysis 說明整體涵蓋情況，並特別指出未涵蓋的關鍵子選項。`;
 
 // ─── Analyze Endpoint ────────────────────────────────────────────────────────
 app.post('/api/analyze', analyzeUpload, async (req: Request, res: Response): Promise<void> => {
@@ -509,21 +549,24 @@ app.post('/api/analyze', analyzeUpload, async (req: Request, res: Response): Pro
             // Criteria text: cap at 150k to avoid overloading input context
             const criteriaText = criteriaByDim[dimCode].substring(0, 150000);
 
-            const sysPrompt = `你是專業 ESG 審計 AI。你的任務是針對「${dimName}」(${batchLabel}) 進行逐題評分。
+            const sysPrompt = `你是專業 CSA/DJSI ESG 審計 AI。你的任務是針對「${dimName}」(${batchLabel}) 依照 DJSI 真實評分邏輯逐題評分。
+
 ${csaScoringRules}
 
 【強制規則】
-- question_code 格式：「${codePrefix} → 題目名稱」
+- question_code 格式：「${codePrefix} → 題目英文名稱」
 - dimension 欄位固定填：「${dimName}」
 - question_name：填該題的繁體中文說明（15字以內）
-- 以下所有 ${questions.length} 題必須全部出現，不可省略。若報告書未提及，score=0，各欄填「報告書未揭露此項目」
-- 各欄字數上限：consistency_analysis ≤ 80字、evidence_excerpt ≤ 60字、standard_requirement ≤ 50字
+- 以下所有 ${questions.length} 題必須全部出現，不可省略
+- 每題必須填寫 sub_options（至少 3 個子選項）；若報告書完全未揭露，所有 sub_options.is_covered=false，score=0
+- sub_options 中每個 option_text 必須來自 Criteria，或從題目核心要求合理拆解
+- 各欄字數上限：consistency_analysis ≤ 80字、evidence ≤ 50字、evidence_excerpt ≤ 60字、standard_requirement ≤ 50字
 - keyword_adjustments 只列出有明確用詞落差的題目（可為空陣列）
 
 【必評題目清單】
 ${qList}
 
-【本維度 CSA ELQ Criteria（節錄）】
+【本維度 CSA ELQ Criteria（節錄）— 請仔細閱讀每題的 Question Layout 以找出子選項】
 ---
 ${criteriaText}
 ---`;

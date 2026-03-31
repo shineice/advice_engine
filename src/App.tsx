@@ -486,7 +486,54 @@ export default function App() {
                                   <span className="text-xs opacity-60">/100</span>
                                 </div>
                               </div>
-                              {/* Row 2: analysis + evidence */}
+                              {/* Row 2: Sub-options checklist (DJSI logic) */}
+                              {q.sub_options && q.sub_options.length > 0 && (
+                                <div className="mb-3 bg-white rounded-xl border border-slate-200 overflow-hidden">
+                                  <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-100">
+                                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">子選項覆蓋狀態（DJSI 評分依據）</span>
+                                    <span className={cn(
+                                      'text-xs font-bold px-2 py-0.5 rounded-full',
+                                      q.sub_options.filter(o => o.is_covered).length === q.sub_options.length
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : q.sub_options.filter(o => o.is_covered).length === 0
+                                          ? 'bg-red-100 text-red-700'
+                                          : 'bg-amber-100 text-amber-700',
+                                    )}>
+                                      {q.sub_options.filter(o => o.is_covered).length} / {q.sub_options.length} 已涵蓋
+                                    </span>
+                                  </div>
+                                  <div className="divide-y divide-slate-50">
+                                    {q.sub_options.map((opt, oi) => (
+                                      <div key={oi} className={cn(
+                                        'flex items-start gap-3 px-4 py-2.5 text-sm',
+                                        opt.is_covered ? 'bg-emerald-50/30' : 'bg-red-50/20',
+                                      )}>
+                                        <span className={cn(
+                                          'shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-xs font-bold mt-0.5',
+                                          opt.is_covered ? 'bg-emerald-500' : 'bg-red-400',
+                                        )}>
+                                          {opt.is_covered ? '✓' : '✗'}
+                                        </span>
+                                        <div className="flex-1 min-w-0">
+                                          <span className={cn(
+                                            'font-medium',
+                                            opt.is_covered ? 'text-slate-700' : 'text-slate-500',
+                                          )}>
+                                            {opt.option_text}
+                                          </span>
+                                          {opt.is_covered && opt.evidence && (
+                                            <p className="mt-0.5 text-xs text-emerald-700 italic leading-relaxed">
+                                              「{opt.evidence}」
+                                            </p>
+                                          )}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Row 3: analysis + evidence */}
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
                                   <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">一致性分析</div>
