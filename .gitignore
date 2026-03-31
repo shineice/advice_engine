@@ -32,3 +32,9 @@ pnpm-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+# Runtime / local data
+results.db
+server_error.log
+server/uploads/
+.claude/
