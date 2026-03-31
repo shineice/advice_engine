@@ -79,6 +79,86 @@ app.post('/api/fetch-url', async (req: Request, res: Response): Promise<void> =>
     }
 });
 
+// ─── CSA ELQ Criterion Weights (2025, Electrical Components & Equipment) ─────
+// Source: CSA_Weights_ELQ.pdf
+// Each entry: { weight: fraction of 100-point total, questions: matched by question code suffix }
+const CRITERION_WEIGHTS: { name: string; weight: number; dim: '03' | '04' | '05'; questions: string[] }[] = [
+    // ── #03 Governance & Economic (35% total) ──
+    { name: 'Transparency & Reporting',            weight: 0.01, dim: '03', questions: ['Sustainability Reporting Boundaries', 'Sustainability Reporting Assurance', 'Sustainability Taxonomies'] },
+    { name: 'Corporate Governance',                weight: 0.08, dim: '03', questions: ['Board Independence', 'Board Type', 'Non-Executive Chairperson', 'Board Diversity Policy', 'Board Gender Diversity', 'Board Accountability', 'Board Average Tenure', 'Board Industry Experience', 'CEO Compensation', 'Government Ownership', 'Family Ownership', 'CEO-to-Employee Pay Ratio', 'Employee Compensation', 'ESG Governance Oversight'] },
+    { name: 'Materiality',                         weight: 0.03, dim: '03', questions: ['Materiality Analysis', 'Material Issues for Enterprise Value Creation', 'Materiality Metrics for Enterprise Value Creation', 'Material Issues for External Stakeholders', 'Materiality Metrics for External Stakeholders'] },
+    { name: 'Risk & Crisis Management',            weight: 0.03, dim: '03', questions: ['Risk Governance', 'Risk Management Processes', 'Emerging Risks'] },
+    { name: 'Business Ethics',                     weight: 0.07, dim: '03', questions: ['UN Global Compact Membership', 'Codes of Conduct', 'Anti-Bribery', 'Whistleblowing Mechanism'] },
+    { name: 'Policy Influence',                    weight: 0.02, dim: '03', questions: ['Policy Influence', 'Contributions & Other Spending', 'Largest Contributions', 'Lobbying and Trade Associations'] },
+    { name: 'Supply Chain Management',             weight: 0.07, dim: '03', questions: ['Supplier Code of Conduct', 'Supplier ESG Programs', 'Supplier Screening', 'Supplier Assessment and Development', 'KPIs for Supplier Screening', 'KPIs for Supplier Assessment', 'Conflict Minerals'] },
+    { name: 'Information Security',                weight: 0.02, dim: '03', questions: ['Information Security Governance', 'Information Security Policy', 'Information Security Management Programs'] },
+    { name: 'Product Quality & Recall Management', weight: 0.02, dim: '03', questions: ['Product Quality Programs', 'Product Recalls'] },
+    // ── #04 Environmental (35% total) ──
+    { name: 'Environmental Policy & Management',   weight: 0.04, dim: '04', questions: ['Environmental Policy', 'Environmental Management Systems Verification', 'Return on Environmental Investments', 'Environmental Violations'] },
+    { name: 'Energy',                              weight: 0.03, dim: '04', questions: ['Energy Management Programs', 'Energy Consumption'] },
+    { name: 'Waste & Pollutants',                  weight: 0.03, dim: '04', questions: ['Waste Management Programs', 'Waste Disposal', 'Hazardous Waste', 'Volatile Organic Compounds Emissions'] },
+    { name: 'Water',                               weight: 0.01, dim: '04', questions: ['Water Efficiency Management Programs', 'Water Consumption'] },
+    { name: 'Climate Strategy',                    weight: 0.10, dim: '04', questions: ['Greenhouse Gas Emissions (Scope 1)', 'Greenhouse Gas Emissions (Scope 2)', 'Greenhouse Gas Emissions (Scope 3)', 'Climate Governance', 'TCFD Disclosure', 'Climate-Related Management Incentives', 'Climate Risk Management', 'Financial Risks of Climate Change', 'Financial Opportunities Arising from Climate Change', 'Climate-Related Scenario Analysis', 'Physical Climate Risk Adaptation', 'Emissions Reduction Targets', 'Internal Carbon Pricing', 'Net-Zero Commitment'] },
+    { name: 'Biodiversity',                        weight: 0.03, dim: '04', questions: ['Biodiversity Risk Assessment', 'Biodiversity Commitment', 'No Deforestation Commitment'] },
+    { name: 'Product Stewardship',                 weight: 0.08, dim: '04', questions: ['Product Design Criteria', 'Life Cycle Assessment', 'Exposure to Hazardous Substances', 'Hazardous Substances Commitment', 'End of Life Cycle Responsibility', 'Revenues from Eco-labeled Products'] },
+    { name: 'Sustainable Raw Materials',           weight: 0.03, dim: '04', questions: ['Raw Materials Policy', 'Raw Materials Programs', 'Plastic Raw Materials', 'Metal Raw Materials'] },
+    // ── #05 Social (30% total) ──
+    { name: 'Labor Practices',                     weight: 0.05, dim: '05', questions: ['Labor Practices Commitment', 'Labor Practices Programs', 'Discrimination & Harassment', 'Workforce Breakdown: Gender', 'Workforce Breakdown: Race'] },
+    { name: 'Human Rights',                        weight: 0.04, dim: '05', questions: ['Human Rights Commitment', 'Human Rights Due Diligence Process', 'Human Rights Assessment', 'Human Rights Mitigation', 'Gender Pay Indicators', 'Freedom of Association'] },
+    { name: 'Human Capital Management',            weight: 0.11, dim: '05', questions: ['Training & Development Inputs', 'Employee Development Programs', 'Human Capital Return on Investment', 'Hiring', 'Employee Turnover Rate', 'Long-Term Incentives for Employees', 'Employee Support Programs', 'Type of Performance Appraisal', 'Trend of Employee Wellbeing'] },
+    { name: 'Occupational Health & Safety',        weight: 0.07, dim: '05', questions: ['OHS Policy', 'OHS Programs', 'Fatalities', 'Lost-Time Injury Frequency Rate'] },
+    { name: 'Customer Relations',                  weight: 0.03, dim: '05', questions: ['Online Strategies', 'Customer Satisfaction Measurement'] },
+];
+
+/**
+ * Calculate CSA-weighted overall score and dimension scores from all questions.
+ * Matching: extract question name from question_code ("G03 → Board Independence" → "Board Independence")
+ */
+function calculateCSAWeightedScore(allQuestions: any[]): {
+    overall_score: number;
+    dimension_scores: { d03: number; d04: number; d05: number };
+    criterion_scores: Record<string, number>;
+} {
+    const criterion_scores: Record<string, number> = {};
+    let overall = 0;
+    const dimRaw: Record<string, number> = { '03': 0, '04': 0, '05': 0 };
+
+    for (const criterion of CRITERION_WEIGHTS) {
+        // Find questions matching this criterion
+        const matched = allQuestions.filter((q: any) => {
+            // Extract name from code: "G03 → Board Independence" → "Board Independence"
+            const codeParts = (q.question_code || '').split(' → ');
+            const nameFromCode = (codeParts[1] || '').trim().toLowerCase();
+            const questionName = (q.question_name || '').toLowerCase();
+            return criterion.questions.some(kw =>
+                nameFromCode.includes(kw.toLowerCase().substring(0, 12)) ||
+                questionName.includes(kw.toLowerCase().substring(0, 8))
+            );
+        });
+
+        const avgScore = matched.length > 0
+            ? matched.reduce((s: number, q: any) => s + (Number(q.score) || 0), 0) / matched.length
+            : 0;
+
+        criterion_scores[criterion.name] = Math.round(avgScore);
+        const contribution = avgScore * criterion.weight;
+        overall += contribution;
+        dimRaw[criterion.dim] += contribution;
+    }
+
+    // Normalize dimension scores to 0-100 scale
+    const D_WEIGHTS: Record<string, number> = { '03': 0.35, '04': 0.35, '05': 0.30 };
+    return {
+        overall_score: Math.min(100, Math.round(overall)),
+        dimension_scores: {
+            d03: Math.min(100, Math.round((dimRaw['03'] / D_WEIGHTS['03']) * 100) / 100),
+            d04: Math.min(100, Math.round((dimRaw['04'] / D_WEIGHTS['04']) * 100) / 100),
+            d05: Math.min(100, Math.round((dimRaw['05'] / D_WEIGHTS['05']) * 100) / 100),
+        },
+        criterion_scores,
+    };
+}
+
 // ─── File Upload ──────────────────────────────────────────────────────────────
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -377,25 +457,35 @@ function repairTruncatedJson(text: string): string {
     // Already valid → return as-is
     try { JSON.parse(text); return text; } catch { /* continue */ }
 
-    // Strategy 1: find the last complete top-level object close "}" and
-    // append the minimal structure needed to close the surrounding arrays/object.
-    // We target the pattern: ...}  followed by ]} or ]} at the end
-    const strategies: Array<(s: string) => string> = [
-        // Close open question array + root object
-        s => { const i = s.lastIndexOf('},'); return i > 0 ? s.slice(0, i + 1) + ']}' : s; },
-        s => { const i = s.lastIndexOf('}'); return i > 0 ? s.slice(0, i + 1) + ']}' : s; },
-        // Already closed array but missing root close
-        s => s.trimEnd().endsWith(']') ? s + '}' : s,
+    // Our dimension schema:
+    // { "dimension_score": N, "question_level_scoring": [...], "keyword_adjustments": [...] }
+    // When truncated, the question_level_scoring array is cut mid-way.
+    // We need to close: last complete question `}` → `], "keyword_adjustments": []}`.
+    const closings = [
+        // Closes array + adds missing keyword_adjustments + root brace
+        ']}',
+        '],"keyword_adjustments":[]}',
+        '],"keyword_adjustments":[],"dimension_score":0}',
     ];
 
-    for (const fix of strategies) {
-        try {
-            const candidate = fix(extractJson(text));
-            JSON.parse(candidate);
-            return candidate;
-        } catch { /* try next */ }
+    const strategies: Array<(s: string) => string[]> = [
+        // Find last complete question (ends with `},`)
+        s => { const i = s.lastIndexOf('},'); return i > 0 ? closings.map(c => s.slice(0, i + 1) + c) : []; },
+        // Find last `}` without trailing comma
+        s => { const i = s.lastIndexOf('}'); return i > 0 ? closings.map(c => s.slice(0, i + 1) + c) : []; },
+        // Array already closed, missing root brace
+        s => s.trimEnd().endsWith(']') ? [s + '}'] : [],
+        // Root object nearly closed
+        s => [s.trimEnd() + '}'],
+    ];
+
+    const cleaned = extractJson(text);
+    for (const strategy of strategies) {
+        for (const candidate of strategy(cleaned)) {
+            try { JSON.parse(candidate); return candidate; } catch { /* try next */ }
+        }
     }
-    return text; // give up, return original for normal error path
+    return text; // give up
 }
 
 function safeParseJson(raw: string, label: string): any {
@@ -579,7 +669,7 @@ ${csaScoringRules}
 - 以下所有 ${questions.length} 題必須全部出現，不可省略
 - 每題必須填寫 sub_options（至少 3 個子選項）；若報告書完全未揭露，所有 sub_options.is_covered=false，score=0
 - sub_options 中每個 option_text 必須來自 Criteria，或從題目核心要求合理拆解
-- 各欄字數上限：consistency_analysis ≤ 80字、evidence ≤ 50字、evidence_excerpt ≤ 60字、standard_requirement ≤ 50字
+- 各欄字數上限：consistency_analysis ≤ 50字、evidence ≤ 30字、benchmark_evidence ≤ 35字、evidence_excerpt ≤ 40字、standard_requirement ≤ 35字
 - keyword_adjustments 只列出有明確用詞落差的題目（可為空陣列）
 
 【必評題目清單】
@@ -631,19 +721,31 @@ ${criteriaText}
             ],
         });
 
-        // D04 is the largest dimension (39 questions) — split into 2 batches of ~20
+        // All dimensions split into ~20-question batches to stay under output token limits
+        // D03: 45 → 23 + 22
+        const D03_A = QUESTIONS['03'].slice(0, 23);
+        const D03_B = QUESTIONS['03'].slice(23);
+        // D04: 39 → 20 + 19
         const D04_A = QUESTIONS['04'].slice(0, 20);
         const D04_B = QUESTIONS['04'].slice(20);
+        // D05: 27 → 14 + 13
+        const D05_A = QUESTIONS['05'].slice(0, 14);
+        const D05_B = QUESTIONS['05'].slice(14);
 
-        // Run 4 batches in parallel (#03, D04-A, D04-B, #05)
-        const [dim03, dim04a, dim04b, dim05] = await Promise.all([
-            runDimBatch('03', QUESTIONS['03'], 'Dim #03'),
-            runDimBatch('04', D04_A,           'Dim #04-A'),
-            runDimBatch('04', D04_B,           'Dim #04-B'),
-            runDimBatch('05', QUESTIONS['05'], 'Dim #05'),
+        // Run all 6 batches in parallel
+        console.log('[ESG Engine] Starting 6-batch parallel scoring (D03×2, D04×2, D05×2)...');
+        const [dim03a, dim03b, dim04a, dim04b, dim05a, dim05b] = await Promise.all([
+            runDimBatch('03', D03_A, 'Dim #03-A'),
+            runDimBatch('03', D03_B, 'Dim #03-B'),
+            runDimBatch('04', D04_A, 'Dim #04-A'),
+            runDimBatch('04', D04_B, 'Dim #04-B'),
+            runDimBatch('05', D05_A, 'Dim #05-A'),
+            runDimBatch('05', D05_B, 'Dim #05-B'),
         ]);
+        const dim03 = mergeBatches(dim03a, dim03b);
         const dim04 = mergeBatches(dim04a, dim04b);
-        console.log(`[ESG Engine] All dimension agents done (D04: ${dim04.question_level_scoring.length} questions). Running synthesis + web-search...`);
+        const dim05 = mergeBatches(dim05a, dim05b);
+        console.log(`[ESG Engine] All 6 batches done. D03:${dim03.question_level_scoring.length} D04:${dim04.question_level_scoring.length} D05:${dim05.question_level_scoring.length}. Running synthesis + web-search...`);
 
         // ── Agent 4: Synthesis ────────────────────────────────────────────────
         const allQuestions = [
@@ -657,22 +759,32 @@ ${criteriaText}
             .map((q: any) => `[${q.question_code}] ${q.question_name} → ${q.score}分: ${q.consistency_analysis}`)
             .join('\n');
 
-        const d03score = Number(dim03.dimension_score) || 0;
-        const d04score = Number(dim04.dimension_score) || 0;
-        const d05score = Number(dim05.dimension_score) || 0;
-        const overallEst = Math.round((d03score + d04score + d05score) / 3);
+        // ── Weighted score using official CSA ELQ 2025 weights ───────────────
+        const weighted = calculateCSAWeightedScore(allQuestions);
+        const d03score = weighted.dimension_scores.d03;
+        const d04score = weighted.dimension_scores.d04;
+        const d05score = weighted.dimension_scores.d05;
+        const overallEst = weighted.overall_score;
+        console.log(`[ESG Engine] Weighted scores — Overall: ${overallEst} | #03: ${d03score} | #04: ${d04score} | #05: ${d05score}`);
 
         const hasBenchmark = !!uploadedBenchmark;
         const benchmarkNote = hasBenchmark
             ? `\n【標竿報告書已上傳】在 improvement_actions 的 benchmark_reference 中，請優先引用已上傳的標竿報告書內容，包含公司名稱、具體段落與學習重點。`
             : `\n【無標竿報告書】benchmark_reference 欄位可留空，由 Web Search Agent 補充。`;
 
+        const criterionSummary = Object.entries(weighted.criterion_scores)
+            .map(([name, score]) => `  ${name}: ${score}`)
+            .join('\n');
+
         const synthSysPrompt = `你是專業 ESG 顧問 AI，負責根據三個維度的評分結果，撰寫整體診斷與改善建議報告。
-已知三個維度評分：
-- ${DIM_NAMES['03']}：${d03score} 分
-- ${DIM_NAMES['04']}：${d04score} 分
-- ${DIM_NAMES['05']}：${d05score} 分
-整體估算分數：${overallEst} 分
+【CSA 加權分數（官方 2025 ELQ 權重）】
+整體加權分數：${overallEst} / 100
+- ${DIM_NAMES['03']} (權重35%)：${d03score} 分
+- ${DIM_NAMES['04']} (權重35%)：${d04score} 分
+- ${DIM_NAMES['05']} (權重30%)：${d05score} 分
+
+準則別分數（各準則在總分中的佔比見括號）：
+${criterionSummary}
 ${benchmarkNote}
 
 【語言偵測】
@@ -804,13 +916,14 @@ ${scoreSummary}
             dashboard_summary: {
                 framework: 'S&P Global CSA (ELQ)',
                 report_language: synthesis.report_language || 'zh',
-                overall_score: synthesis.overall_score ?? overallEst,
+                overall_score: overallEst,          // ★ always use CSA-weighted score
                 dimension_scores: {
-                    '#03 Governance & Economic': d03score,
-                    '#04 Environmental': d04score,
-                    '#05 Social': d05score,
+                    '#03 Governance & Economic (35%)': d03score,
+                    '#04 Environmental (35%)': d04score,
+                    '#05 Social (30%)': d05score,
                 },
-                // ★ Always hardcode exactly 3 radar dimensions
+                criterion_scores: weighted.criterion_scores, // per-criterion breakdown
+                // ★ Hardcode exactly 3 radar dimensions with CSA-weighted scores
                 radar_chart_data: [
                     { dimension: 'Governance & Economic', score: d03score },
                     { dimension: 'Environmental',         score: d04score },

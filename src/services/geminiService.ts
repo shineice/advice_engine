@@ -4,6 +4,7 @@ export interface ESGAnalysisResult {
     report_language: 'en' | 'zh';
     overall_score: number;
     dimension_scores: Record<string, number>;
+    criterion_scores?: Record<string, number>; // CSA weighted criterion breakdown
     radar_chart_data: { dimension: string; score: number }[];
   };
   executive_diagnosis: {

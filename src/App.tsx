@@ -45,6 +45,32 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// CSA ELQ 2025 criterion weights (mirrors server/index.ts for UI display)
+const CRITERION_META: { name: string; weight: number; dim: '03' | '04' | '05' }[] = [
+  { name: 'Transparency & Reporting',            weight: 0.01, dim: '03' },
+  { name: 'Corporate Governance',                weight: 0.08, dim: '03' },
+  { name: 'Materiality',                         weight: 0.03, dim: '03' },
+  { name: 'Risk & Crisis Management',            weight: 0.03, dim: '03' },
+  { name: 'Business Ethics',                     weight: 0.07, dim: '03' },
+  { name: 'Policy Influence',                    weight: 0.02, dim: '03' },
+  { name: 'Supply Chain Management',             weight: 0.07, dim: '03' },
+  { name: 'Information Security',                weight: 0.02, dim: '03' },
+  { name: 'Product Quality & Recall Management', weight: 0.02, dim: '03' },
+  { name: 'Environmental Policy & Management',   weight: 0.04, dim: '04' },
+  { name: 'Energy',                              weight: 0.03, dim: '04' },
+  { name: 'Waste & Pollutants',                  weight: 0.03, dim: '04' },
+  { name: 'Water',                               weight: 0.01, dim: '04' },
+  { name: 'Climate Strategy',                    weight: 0.10, dim: '04' },
+  { name: 'Biodiversity',                        weight: 0.03, dim: '04' },
+  { name: 'Product Stewardship',                 weight: 0.08, dim: '04' },
+  { name: 'Sustainable Raw Materials',           weight: 0.03, dim: '04' },
+  { name: 'Labor Practices',                     weight: 0.05, dim: '05' },
+  { name: 'Human Rights',                        weight: 0.04, dim: '05' },
+  { name: 'Human Capital Management',            weight: 0.11, dim: '05' },
+  { name: 'Occupational Health & Safety',        weight: 0.07, dim: '05' },
+  { name: 'Customer Relations',                  weight: 0.03, dim: '05' },
+];
+
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
   return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -194,10 +220,10 @@ export default function App() {
           <p className="text-slate-400 text-sm mb-8">S&P Global CSA (ELQ) · 111 題全覆蓋</p>
           <div className="space-y-3 text-left">
             {([
-              { label: 'Agent 1 — #03 Governance & Economic', desc: '45 題：治理、薪酬、供應鏈、資安…', color: 'bg-blue-500' },
-              { label: 'Agent 2 — #04 Environmental',         desc: '39 題：氣候、能源、水資源、生物多樣性…', color: 'bg-emerald-500' },
-              { label: 'Agent 3 — #05 Social',                desc: '27 題：勞工、人權、職安、客戶關係…', color: 'bg-violet-500' },
-              { label: 'Agent 4 — Synthesis（診斷 & 建議）',  desc: '彙整 3 維度分數 → 產出診斷與改善路徑', color: 'bg-amber-500' },
+              { label: 'Agent 1+2 — #03 Governance（前後批並行）', desc: '45 題拆 23+22：治理、薪酬、供應鏈、資安…', color: 'bg-blue-500' },
+              { label: 'Agent 3+4 — #04 Environmental（前後批並行）', desc: '39 題拆 20+19：氣候、能源、水資源、生物多樣性…', color: 'bg-emerald-500' },
+              { label: 'Agent 5+6 — #05 Social（前後批並行）', desc: '27 題拆 14+13：勞工、人權、職安、客戶關係…', color: 'bg-violet-500' },
+              { label: 'Agent 7 — Synthesis + Web Search（診斷 & 建議）', desc: '彙整 6 批次 → 診斷、改善路徑、標竿搜尋', color: 'bg-amber-500' },
             ] as const).map((agent, i) => (
               <div key={i} className="bg-white rounded-xl p-4 border border-slate-200 flex items-center gap-4">
                 <div className={`w-2 h-10 rounded-full ${agent.color} animate-pulse`} style={{ animationDelay: `${i * 0.3}s` }} />
@@ -262,14 +288,46 @@ export default function App() {
                   <span className="text-slate-400 font-medium">/ 100</span>
                 </div>
               </div>
-              <div className="mt-6 flex flex-wrap justify-center gap-4">
+              {/* Dimension scores */}
+              <div className="mt-4 w-full space-y-2">
                 {Object.entries(result.dashboard_summary.dimension_scores).map(([key, score]) => (
-                  <div key={key} className="text-center">
-                    <div className="text-xs font-medium text-slate-400 mb-1">{key}</div>
-                    <div className="text-sm font-bold text-slate-700">{score}</div>
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 w-52 shrink-0 truncate">{key}</span>
+                    <div className="flex-1 bg-slate-100 rounded-full h-2">
+                      <div className={cn('h-2 rounded-full transition-all',
+                        score >= 75 ? 'bg-emerald-500' : score >= 50 ? 'bg-amber-400' : 'bg-red-400'
+                      )} style={{ width: `${score}%` }} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 w-8 text-right">{score}</span>
                   </div>
                 ))}
               </div>
+              {/* Criterion breakdown */}
+              {result.dashboard_summary.criterion_scores && (
+                <details className="mt-4 group">
+                  <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600 select-none">
+                    ▸ 準則別分數明細（CSA 2025 加權）
+                  </summary>
+                  <div className="mt-2 space-y-1.5">
+                    {Object.entries(result.dashboard_summary.criterion_scores).map(([name, score]) => {
+                      const crit = CRITERION_META.find(c => c.name === name);
+                      return (
+                        <div key={name} className="flex items-center gap-2">
+                          <span className="text-[11px] text-slate-400 w-48 shrink-0 truncate">{name}</span>
+                          <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                            <div className={cn('h-1.5 rounded-full',
+                              score >= 75 ? 'bg-emerald-400' : score >= 50 ? 'bg-amber-300' : 'bg-red-300'
+                            )} style={{ width: `${score}%` }} />
+                          </div>
+                          <span className="text-[11px] font-medium text-slate-500 w-14 text-right">
+                            {score} <span className="font-normal text-slate-300">({crit ? Math.round(crit.weight * 100) : '?'}%)</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              )}
             </motion.div>
 
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
