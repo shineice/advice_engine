@@ -53,6 +53,32 @@ app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// ─── URL Fetch Endpoint ───────────────────────────────────────────────────────
+app.post('/api/fetch-url', async (req: Request, res: Response): Promise<void> => {
+    const { url } = req.body;
+    if (!url) { res.status(400).json({ error: 'URL is required.' }); return; }
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const httpRes = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (ESG-Engine/2.0)' },
+            signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        const html = await httpRes.text();
+        const text = html
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 12000);
+        res.json({ url, text, length: text.length });
+    } catch (err: any) {
+        res.status(400).json({ error: `無法抓取網頁：${err?.message ?? err}` });
+    }
+});
+
 // ─── File Upload ──────────────────────────────────────────────────────────────
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -70,6 +96,13 @@ const upload = multer({
         cb(null, true);
     },
 });
+
+// multer fields config — used in /api/analyze
+const analyzeUpload = upload.fields([
+    { name: 'file',          maxCount: 1 },   // main report (required)
+    { name: 'benchmarkFile', maxCount: 1 },   // benchmark report (optional)
+    { name: 'extraFiles',    maxCount: 5 },   // annual reports / website exports / other
+]);
 
 // ─── Question Lists (per dimension) ──────────────────────────────────────────
 const QUESTIONS: Record<string, string[]> = {
@@ -260,6 +293,28 @@ const synthesisSchema = {
                'improvement_path','suggested_disclosure_text'],
 };
 
+// Agent 5 schema — web-search benchmark results (no JSON schema constraint, just for formatting call)
+const webSearchResultSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+        benchmark_references: {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.OBJECT,
+                properties: {
+                    topic:        { type: SchemaType.STRING, description: 'CSA 題項名稱（與 improvement_actions 對應）' },
+                    company_name: { type: SchemaType.STRING },
+                    excerpt:      { type: SchemaType.STRING, description: '該公司報告書或官網的具體揭露段落（50字以內）' },
+                    explanation:  { type: SchemaType.STRING, description: '為何這份揭露值得學習（50字以內）' },
+                    source_url:   { type: SchemaType.STRING, description: '資料來源 URL（若可取得）' },
+                },
+                required: ['topic', 'company_name', 'excerpt', 'explanation'],
+            },
+        },
+    },
+    required: ['benchmark_references'],
+};
+
 // ─── JSON Helpers ─────────────────────────────────────────────────────────────
 /**
  * Gemini sometimes wraps JSON in ```json ... ``` markdown blocks.
@@ -307,13 +362,15 @@ const csaScoringRules = `
 0分（缺失）：報告書完全沒有提及該項目`;
 
 // ─── Analyze Endpoint ────────────────────────────────────────────────────────
-app.post('/api/analyze', upload.fields([
-    { name: 'file', maxCount: 1 },
-    { name: 'benchmarkFile', maxCount: 1 },
-]), async (req: Request, res: Response): Promise<void> => {
+app.post('/api/analyze', analyzeUpload, async (req: Request, res: Response): Promise<void> => {
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-    const mainFile = files?.['file']?.[0];
+    const mainFile      = files?.['file']?.[0];
     const benchmarkFile = files?.['benchmarkFile']?.[0];
+    const extraFiles    = files?.['extraFiles'] ?? [];
+    // Website texts pre-fetched by frontend and sent as JSON string
+    const websiteTexts: { url: string; text: string }[] = (() => {
+        try { return JSON.parse(req.body.websiteTexts || '[]'); } catch { return []; }
+    })();
 
     if (!mainFile) {
         res.status(400).json({ error: 'No main file uploaded or invalid file format.' });
@@ -347,6 +404,7 @@ app.post('/api/analyze', upload.fields([
 
     let uploadedMain: any = null;
     let uploadedBenchmark: any = null;
+    const uploadedExtras: any[] = [];
 
     try {
         console.log(`[ESG Engine] Uploading: ${mainFile.originalname}`);
@@ -360,6 +418,12 @@ app.post('/api/analyze', upload.fields([
                 displayName: benchmarkFile.originalname,
             });
         }
+        for (const ef of extraFiles) {
+            const up = await fileManager.uploadFile(ef.path, {
+                mimeType: ef.mimetype, displayName: ef.originalname,
+            });
+            uploadedExtras.push({ upload: up, local: ef });
+        }
 
         // Wait for Gemini file processing
         const waitReady = async (name: string) => {
@@ -372,6 +436,7 @@ app.post('/api/analyze', upload.fields([
         };
         await waitReady(uploadedMain.file.name);
         if (uploadedBenchmark) await waitReady(uploadedBenchmark.file.name);
+        for (const ue of uploadedExtras) await waitReady(ue.upload.file.name);
         console.log('[ESG Engine] Files ready. Starting 3-agent parallel scoring...');
 
         // ── Helper: build content parts ──────────────────────────────────────
@@ -381,8 +446,16 @@ app.post('/api/analyze', upload.fields([
                 { fileData: { mimeType: uploadedMain.file.mimeType, fileUri: uploadedMain.file.uri } },
             ];
             if (uploadedBenchmark) {
-                parts.push({ text: '以下是標竿報告書（請參考優秀做法）：' });
+                parts.push({ text: '以下是使用者上傳的「標竿報告書」，請特別留意其優秀揭露段落，撰寫 benchmark_reference 時優先引用此報告書：' });
                 parts.push({ fileData: { mimeType: uploadedBenchmark.file.mimeType, fileUri: uploadedBenchmark.file.uri } });
+            }
+            for (const ue of uploadedExtras) {
+                parts.push({ text: `以下是使用者上傳的補充文件（${ue.upload.file.displayName}），可做為評分與建議的參考依據：` });
+                parts.push({ fileData: { mimeType: ue.upload.file.mimeType, fileUri: ue.upload.file.uri } });
+            }
+            if (websiteTexts.length > 0) {
+                parts.push({ text: '以下是使用者提供的官方網站 / 年報網頁文字內容：\n' +
+                    websiteTexts.map(w => `[來源: ${w.url}]\n${w.text}`).join('\n\n---\n\n') });
             }
             if (extraText) parts.push({ text: extraText });
             return parts;
@@ -449,7 +522,7 @@ ${criteriaByDim[dimCode].substring(0, 280000)}
             runDimensionAgent('04'),
             runDimensionAgent('05'),
         ]);
-        console.log('[ESG Engine] All 3 dimension agents done. Running synthesis agent...');
+        console.log('[ESG Engine] All 3 dimension agents done. Running synthesis + web-search agents in parallel...');
 
         // ── Agent 4: Synthesis ────────────────────────────────────────────────
         const allQuestions = [
@@ -468,31 +541,98 @@ ${criteriaByDim[dimCode].substring(0, 280000)}
         const d05score = Number(dim05.dimension_score) || 0;
         const overallEst = Math.round((d03score + d04score + d05score) / 3);
 
+        const hasBenchmark = !!uploadedBenchmark;
+        const benchmarkNote = hasBenchmark
+            ? `\n【標竿報告書已上傳】在 improvement_actions 的 benchmark_reference 中，請優先引用已上傳的標竿報告書內容，包含公司名稱、具體段落與學習重點。`
+            : `\n【無標竿報告書】benchmark_reference 欄位可留空，由 Web Search Agent 補充。`;
+
         const synthSysPrompt = `你是專業 ESG 顧問 AI，負責根據三個維度的評分結果，撰寫整體診斷與改善建議報告。
 已知三個維度評分：
 - ${DIM_NAMES['03']}：${d03score} 分
 - ${DIM_NAMES['04']}：${d04score} 分
 - ${DIM_NAMES['05']}：${d05score} 分
 整體估算分數：${overallEst} 分
+${benchmarkNote}
 
 【語言偵測】
 首先判斷報告書是英文（en）或中文（zh），填入 report_language。
 
-【關鍵字調整語言規則】（已整合進 improvement_path）
+【language rules for recommendations】
 若報告書為英文：recommendation_en 填英文建議；recommendation_zh 填繁體中文翻譯
 若報告書為中文：兩欄皆填繁體中文
 
 【任務說明】
-1. overall_score：依三維度加權（可參考 CSA 實際配比調整，或直接用 ${overallEst}）
-2. radar_chart_data：包含三個維度 + 至多 5 個細項維度（取低分題的維度分類）
-3. executive_diagnosis：summary 2–3句、strengths 5條、gaps 5條、critical_missing_elements 取得0分的題目
-4. improvement_path：挑出得分 ≤ 50 的題目，給具體改善建議，最多 15 條
+1. overall_score：依三維度加權，或直接用 ${overallEst}
+2. radar_chart_data：只填以下固定三筆，不可增加：
+   - { dimension: "Governance & Economic Dimension", score: ${d03score} }
+   - { dimension: "Environmental Dimension",         score: ${d04score} }
+   - { dimension: "Social Dimension",                score: ${d05score} }
+3. executive_diagnosis：summary 2–3句、strengths 5條、gaps 5條、critical_missing_elements 取得0分題目
+4. improvement_path：挑出得分 ≤ 50 的題目，給具體改善建議，最多 15 條${hasBenchmark ? '，benchmark_reference 必須引用標竿報告書' : ''}
 5. suggested_disclosure_text：針對最重要的 5 個缺口題，提供建議揭露文本（中英文）
 
 以下是所有題目的評分摘要（共 ${allQuestions.length} 題）：
 ---
 ${scoreSummary}
 ---`;
+
+        // ── Agent 5: Web Search (runs in parallel with synthesis) ────────────
+        const runWebSearchAgent = async (): Promise<any[]> => {
+            // Pick top 8 weakest topics for search
+            const weakTopics = [...allQuestions]
+                .sort((a: any, b: any) => a.score - b.score)
+                .slice(0, 8)
+                .map((q: any) => q.question_name || q.question_code);
+
+            if (weakTopics.length === 0) return [];
+
+            console.log('[ESG Engine] Web Search Agent: searching for', weakTopics.slice(0, 3), '...');
+
+            try {
+                // Step 1: Search with Google Search grounding (cannot use JSON schema here)
+                const searchModel = ai.getGenerativeModel({
+                    model: 'gemini-2.5-flash',
+                    tools: [{ googleSearch: {} } as any],
+                });
+                const searchPrompt = `你是 ESG 研究員。請搜尋以下 ESG 議題中，哪些知名上市公司（如台積電、Apple、Microsoft、Unilever、Sony 等）有特別優秀且具體的永續報告書揭露做法。
+題項：${weakTopics.join(' / ')}
+
+對每個題項，請找出：
+1. 公司名稱
+2. 該公司的具體揭露做法或報告書相關段落（請直接引用或描述）
+3. 為何這份揭露值得學習
+
+格式範例：
+## [題項名稱]
+公司：TSMC
+揭露內容：「TSMC has set science-based targets aligned with 1.5°C pathway...」
+學習重點：具體量化目標搭配時程，符合 CSA 要求`;
+
+                const searchRes = await searchModel.generateContent(searchPrompt);
+                const searchText = searchRes.response.text();
+
+                // Step 2: Format into JSON
+                const formatModel = ai.getGenerativeModel({
+                    model: 'gemini-2.5-flash',
+                    systemInstruction: '你是資料格式化 AI，將輸入的 ESG 標竿研究結果轉換成結構化 JSON。',
+                    generationConfig: {
+                        responseMimeType: 'application/json',
+                        responseSchema: webSearchResultSchema as any,
+                        temperature: 0.0,
+                        maxOutputTokens: 8192,
+                    },
+                });
+                const formatRes = await formatModel.generateContent(
+                    `請將以下 ESG 標竿研究結果格式化：\n${searchText}`
+                );
+                const formatted = safeParseJson(formatRes.response.text(), 'WebSearch format');
+                console.log(`[ESG Engine] Web Search Agent done — ${formatted.benchmark_references?.length ?? 0} references found.`);
+                return formatted.benchmark_references ?? [];
+            } catch (err) {
+                console.warn('[ESG Engine] Web Search Agent failed (non-fatal):', err instanceof Error ? err.message : err);
+                return [];
+            }
+        };
 
         const synthModel = ai.getGenerativeModel({
             model: 'gemini-2.5-flash',
@@ -505,11 +645,13 @@ ${scoreSummary}
             },
         });
 
-        const synthResponse = await synthModel.generateContent(
-            buildParts('請根據以上所有題目評分結果，產出整體診斷報告、改善建議與建議揭露文本。')
-        );
-        const synthesis = safeParseJson(synthResponse.response.text(), 'Synthesis agent');
-        console.log('[ESG Engine] Synthesis done. Merging results...');
+        // Run synthesis + web search in parallel
+        const [synthesis, webBenchmarks] = await Promise.all([
+            synthModel.generateContent(buildParts('請根據以上所有題目評分結果，產出整體診斷報告、改善建議與建議揭露文本。'))
+                .then(r => safeParseJson(r.response.text(), 'Synthesis agent')),
+            runWebSearchAgent(),
+        ]);
+        console.log('[ESG Engine] Synthesis + Web Search done. Merging results...');
 
         // ── Merge into final ESGAnalysisResult ───────────────────────────────
         const allKeywords = [
@@ -517,6 +659,25 @@ ${scoreSummary}
             ...(dim04.keyword_adjustments || []),
             ...(dim05.keyword_adjustments || []),
         ];
+
+        // Attach web-search benchmarks to improvement_actions that lack one
+        const improvementActions = (synthesis.improvement_path?.improvement_actions ?? []).map((action: any) => {
+            if (!action.benchmark_reference && webBenchmarks.length > 0) {
+                const match = webBenchmarks.find((wb: any) =>
+                    wb.topic && action.topic &&
+                    (wb.topic.toLowerCase().includes(action.topic.toLowerCase()) ||
+                     action.topic.toLowerCase().includes(wb.topic.toLowerCase()))
+                ) ?? (webBenchmarks.shift()); // fallback: take next unused
+                if (match) {
+                    action.benchmark_reference = {
+                        company_name: match.company_name,
+                        excerpt: match.excerpt,
+                        explanation: match.explanation + (match.source_url ? ` (來源: ${match.source_url})` : ''),
+                    };
+                }
+            }
+            return action;
+        });
 
         const finalResult = {
             dashboard_summary: {
@@ -528,15 +689,16 @@ ${scoreSummary}
                     '#04 Environmental': d04score,
                     '#05 Social': d05score,
                 },
-                radar_chart_data: synthesis.radar_chart_data ?? [
-                    { dimension: '#03 Governance & Economic', score: d03score },
-                    { dimension: '#04 Environmental', score: d04score },
-                    { dimension: '#05 Social', score: d05score },
+                // ★ Always hardcode exactly 3 radar dimensions
+                radar_chart_data: [
+                    { dimension: 'Governance & Economic', score: d03score },
+                    { dimension: 'Environmental',         score: d04score },
+                    { dimension: 'Social',                score: d05score },
                 ],
             },
             executive_diagnosis: synthesis.executive_diagnosis,
             question_level_scoring: allQuestions,
-            improvement_path: synthesis.improvement_path,
+            improvement_path: { improvement_actions: improvementActions },
             keyword_gap_analysis: { adjustments: allKeywords },
             suggested_disclosure_text: synthesis.suggested_disclosure_text,
         };
@@ -562,6 +724,10 @@ ${scoreSummary}
                 await fileManager.deleteFile(uploadedBenchmark.file.name);
                 if (benchmarkFile) fs.unlinkSync(benchmarkFile.path);
             }
+            for (const ue of uploadedExtras) {
+                await fileManager.deleteFile(ue.upload.file.name).catch(() => {});
+                if (fs.existsSync(ue.local.path)) fs.unlinkSync(ue.local.path);
+            }
         } catch (cleanErr) {
             console.error('[ESG Engine] Cleanup warning:', cleanErr);
         }
@@ -578,8 +744,10 @@ ${scoreSummary}
         try {
             if (uploadedMain) await fileManager.deleteFile(uploadedMain.file.name).catch(() => {});
             if (uploadedBenchmark) await fileManager.deleteFile(uploadedBenchmark.file.name).catch(() => {});
+            for (const ue of uploadedExtras) await fileManager.deleteFile(ue.upload.file.name).catch(() => {});
             if (mainFile?.path && fs.existsSync(mainFile.path)) fs.unlinkSync(mainFile.path);
             if (benchmarkFile?.path && fs.existsSync(benchmarkFile.path)) fs.unlinkSync(benchmarkFile.path);
+            for (const ef of extraFiles) if (fs.existsSync(ef.path)) fs.unlinkSync(ef.path);
         } catch {}
 
         res.status(500).json({ error: msg });

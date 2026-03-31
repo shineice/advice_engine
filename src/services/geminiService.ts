@@ -68,13 +68,31 @@ const getApiUrl = () => {
   return `${window.location.protocol}//${window.location.hostname}:3001`;
 };
 
+export async function fetchUrlText(url: string): Promise<{ url: string; text: string; length: number }> {
+  const response = await fetch(`${getApiUrl()}/api/fetch-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to fetch URL`);
+  }
+  return response.json();
+}
+
 export async function analyzeESGReport(
   file: File,
-  benchmarkFile?: File
+  benchmarkFile?: File,
+  extraFiles?: File[],
+  websiteTexts?: { url: string; text: string }[]
 ): Promise<ESGAnalysisResult> {
   const formData = new FormData();
   formData.append('file', file);
   if (benchmarkFile) formData.append('benchmarkFile', benchmarkFile);
+  if (extraFiles) extraFiles.forEach(f => formData.append('extraFiles', f));
+  if (websiteTexts && websiteTexts.length > 0)
+    formData.append('websiteTexts', JSON.stringify(websiteTexts));
 
   const response = await fetch(`${getApiUrl()}/api/analyze`, {
     method: 'POST',

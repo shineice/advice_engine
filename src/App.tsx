@@ -35,6 +35,7 @@ import {
   analyzeESGReport,
   fetchHistory,
   fetchResultById,
+  fetchUrlText,
   deleteResult,
   ESGAnalysisResult,
   HistoryRecord,
@@ -52,7 +53,15 @@ function formatDate(dateStr: string) {
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [benchmarkFile, setBenchmarkFile] = useState<File | null>(null);
+  const [extraFiles, setExtraFiles] = useState<File[]>([]);
+  // URL inputs
+  const [urlInputs, setUrlInputs] = useState<string[]>(['']);
+  const [urlTexts, setUrlTexts] = useState<{ url: string; text: string }[]>([]);
+  const [fetchingUrl, setFetchingUrl] = useState<number | null>(null);
+  const [urlErrors, setUrlErrors] = useState<Record<number, string>>({});
+
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeStep, setAnalyzeStep] = useState('');
   const [result, setResult] = useState<ESGAnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'summary' | 'scoring' | 'improvement'>('summary');
@@ -79,6 +88,24 @@ export default function App() {
     }
   };
 
+  const handleFetchUrl = async (idx: number) => {
+    const url = urlInputs[idx]?.trim();
+    if (!url) return;
+    setFetchingUrl(idx);
+    setUrlErrors(prev => { const n = { ...prev }; delete n[idx]; return n; });
+    try {
+      const data = await fetchUrlText(url);
+      setUrlTexts(prev => {
+        const next = prev.filter(u => u.url !== url);
+        return [...next, { url: data.url, text: data.text }];
+      });
+    } catch (e: any) {
+      setUrlErrors(prev => ({ ...prev, [idx]: e.message || '抓取失敗' }));
+    } finally {
+      setFetchingUrl(null);
+    }
+  };
+
   const handleAnalyze = async (mainFile: File, optionalRefFile?: File | null) => {
     if (mainFile.size > 50 * 1024 * 1024 || (optionalRefFile && optionalRefFile.size > 50 * 1024 * 1024)) {
       setError('檔案過大（超過 50MB），請上傳小於 50MB 的 PDF 或 Markdown 檔案。');
@@ -86,19 +113,27 @@ export default function App() {
     }
     setIsAnalyzing(true);
     setError(null);
+    setAnalyzeStep('上傳檔案並等待 Gemini 處理...');
     try {
-      const analysisResult = await analyzeESGReport(mainFile, optionalRefFile || undefined);
+      setAnalyzeStep('Agent 1-3 並行評分 (#03 / #04 / #05)...');
+      const analysisResult = await analyzeESGReport(
+        mainFile,
+        optionalRefFile || undefined,
+        extraFiles.length > 0 ? extraFiles : undefined,
+        urlTexts.length > 0 ? urlTexts : undefined,
+      );
       setResult(analysisResult);
-      loadHistory(); // refresh history list
+      loadHistory();
     } catch (err: any) {
       const errorMessage = err.message || JSON.stringify(err);
       if (errorMessage.includes('xhr error') || errorMessage.includes('Failed to fetch')) {
-        setError('連線逾時或後端無回應。請確認伺服器已啟動（npm run dev），並檢查 .env 的 VITE_API_URL 是否設為 http://localhost:3001。');
+        setError('連線逾時或後端無回應。請確認伺服器已啟動（npm run dev）。');
       } else {
         setError(`分析失敗: ${errorMessage}`);
       }
     } finally {
       setIsAnalyzing(false);
+      setAnalyzeStep('');
     }
   };
 
@@ -121,25 +156,29 @@ export default function App() {
   const onMainDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) { setFile(acceptedFiles[0]); setError(null); }
   }, []);
-
   const onBenchmarkDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) setBenchmarkFile(acceptedFiles[0]);
   }, []);
+  const onExtraDrop = useCallback((acceptedFiles: File[]) => {
+    setExtraFiles(prev => [...prev, ...acceptedFiles].slice(0, 5));
+  }, []);
+
+  const acceptedTypes = { 'application/pdf': ['.pdf'], 'text/markdown': ['.md', '.markdown'], 'text/plain': ['.txt'] };
 
   const { getRootProps: getMainRootProps, getInputProps: getMainInputProps, isDragActive: isMainDragActive } = useDropzone({
-    onDrop: onMainDrop,
-    accept: { 'application/pdf': ['.pdf'], 'text/markdown': ['.md', '.markdown'], 'text/plain': ['.txt'] },
-    multiple: false
+    onDrop: onMainDrop, accept: acceptedTypes, multiple: false,
   });
-
   const { getRootProps: getBenchmarkRootProps, getInputProps: getBenchmarkInputProps, isDragActive: isBenchmarkDragActive } = useDropzone({
-    onDrop: onBenchmarkDrop,
-    accept: { 'application/pdf': ['.pdf'], 'text/markdown': ['.md', '.markdown'], 'text/plain': ['.txt'] },
-    multiple: false
+    onDrop: onBenchmarkDrop, accept: acceptedTypes, multiple: false,
+  });
+  const { getRootProps: getExtraRootProps, getInputProps: getExtraInputProps, isDragActive: isExtraDragActive } = useDropzone({
+    onDrop: onExtraDrop, accept: acceptedTypes, multiple: true,
   });
 
   const reset = () => {
-    setFile(null); setBenchmarkFile(null); setResult(null); setError(null); setIsAnalyzing(false);
+    setFile(null); setBenchmarkFile(null); setExtraFiles([]);
+    setUrlInputs(['']); setUrlTexts([]); setUrlErrors({});
+    setResult(null); setError(null); setIsAnalyzing(false); setAnalyzeStep('');
   };
 
   // ─── Loading Screen ──────────────────────────────────────────────────────
@@ -623,6 +662,7 @@ export default function App() {
             上傳您的永續報告書，AI 將依據 S&P Global CSA (ELQ) 框架進行全面審查，提供具備證據支持的評分與改善建議。
           </p>
 
+          {/* ── Row 1: Main Report + Benchmark ── */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto mt-4">
             {/* Main File */}
             <div {...getMainRootProps()}
@@ -663,8 +703,75 @@ export default function App() {
               ) : (
                 <div className="text-center">
                   <p className="text-slate-900 font-bold mb-2">上傳標竿報告書 (選填)</p>
-                  <p className="text-slate-400 text-xs">用於給予 AI 參考好的作法</p>
+                  <p className="text-slate-400 text-xs">AI 優先引用此報告書作為標竿建議</p>
                 </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Row 2: Extra Files + URL Inputs ── */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto mt-4">
+            {/* Extra files (annual report, website export…) */}
+            <div {...getExtraRootProps()}
+              className={cn("group cursor-pointer p-6 border-2 border-dashed rounded-3xl transition-all flex flex-col items-center justify-center min-h-[140px]",
+                isExtraDragActive ? "border-violet-500 bg-violet-50" : extraFiles.length > 0 ? "border-violet-300 bg-violet-50/40" : "border-slate-200 hover:border-violet-400 hover:bg-slate-50")}>
+              <input {...getExtraInputProps()} />
+              <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center mb-3 transition-transform group-hover:scale-110",
+                extraFiles.length > 0 ? "bg-violet-500 text-white" : "bg-slate-100 text-slate-400")}>
+                <FileText className="w-5 h-5" />
+              </div>
+              {extraFiles.length > 0 ? (
+                <div className="text-center w-full">
+                  <p className="text-violet-700 text-xs font-bold mb-1">已加入 {extraFiles.length} 個補充文件</p>
+                  <div className="space-y-0.5">
+                    {extraFiles.map((f, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-slate-500 bg-white border border-slate-100 px-2 py-1 rounded">
+                        <span className="truncate max-w-[140px]">{f.name}</span>
+                        <button onClick={e => { e.stopPropagation(); setExtraFiles(prev => prev.filter((_, pi) => pi !== i)); }}
+                          className="ml-2 text-slate-300 hover:text-red-400 shrink-0"><X className="w-3 h-3" /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <p className="text-slate-700 font-bold text-sm mb-1">年報 / 附加文件 (選填)</p>
+                  <p className="text-slate-400 text-xs">可上傳多個：年報、官網匯出、其他 PDF</p>
+                </div>
+              )}
+            </div>
+
+            {/* URL inputs */}
+            <div className="bg-white border-2 border-slate-200 rounded-3xl p-6 flex flex-col gap-3">
+              <div className="flex items-center gap-2 mb-1">
+                <Globe className="w-4 h-4 text-slate-400" />
+                <span className="text-sm font-bold text-slate-700">官網 / 年報網址 (選填)</span>
+              </div>
+              {urlInputs.map((url, idx) => (
+                <div key={idx} className="space-y-1">
+                  <div className="flex gap-2">
+                    <input
+                      type="url" value={url}
+                      onChange={e => setUrlInputs(prev => prev.map((u, i) => i === idx ? e.target.value : u))}
+                      placeholder="https://www.example.com/sustainability"
+                      className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                    />
+                    <button onClick={() => handleFetchUrl(idx)} disabled={!url.trim() || fetchingUrl === idx}
+                      className={cn("px-3 py-2 rounded-lg text-xs font-bold transition-all shrink-0",
+                        urlTexts.some(u => u.url === url.trim()) ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>
+                      {fetchingUrl === idx ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
+                        urlTexts.some(u => u.url === url.trim()) ? '✓ 已抓取' : '抓取'}
+                    </button>
+                  </div>
+                  {urlErrors[idx] && <p className="text-xs text-red-500">{urlErrors[idx]}</p>}
+                </div>
+              ))}
+              {urlInputs.length < 4 && (
+                <button onClick={() => setUrlInputs(prev => [...prev, ''])}
+                  className="text-xs text-slate-400 hover:text-emerald-600 transition-colors self-start">+ 新增網址</button>
+              )}
+              {urlTexts.length > 0 && (
+                <p className="text-xs text-emerald-600 font-medium">✓ {urlTexts.length} 個網頁已擷取（共 {urlTexts.reduce((a, u) => a + u.text.length, 0).toLocaleString()} 字）</p>
               )}
             </div>
           </div>
