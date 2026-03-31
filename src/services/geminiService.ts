@@ -20,8 +20,14 @@ export interface ESGAnalysisResult {
     /** DJSI sub-option checklist: each item is one CSA criterion checkbox */
     sub_options: {
       option_text: string;
+      /** 受評報告書是否明確涵蓋 */
       is_covered: boolean;
+      /** 受評報告書的引用原文（is_covered=true 時） */
       evidence: string;
+      /** 標竿報告書是否明確涵蓋（無標竿時為 false） */
+      benchmark_covered: boolean;
+      /** 標竿報告書的具體做法原文（benchmark_covered=true 時） */
+      benchmark_evidence: string;
     }[];
     consistency_analysis: string;
     standard_requirement: string;

@@ -186,14 +186,22 @@ const subOptionSchema = {
         },
         is_covered: {
             type: SchemaType.BOOLEAN,
-            description: '報告書或公開網站中是否有「明確且具體」的對應描述（模糊提及或間接相關不算）',
+            description: '【受評報告書】是否明確且具體地涵蓋此子選項（模糊提及或間接相關不算）',
         },
         evidence: {
             type: SchemaType.STRING,
-            description: '若 is_covered=true，填入報告書原文佐證（50字以內）；is_covered=false 則填空字串',
+            description: '【受評報告書】若 is_covered=true，填入原文佐證（50字以內）；false 則填空字串',
+        },
+        benchmark_covered: {
+            type: SchemaType.BOOLEAN,
+            description: '【標竿報告書】是否明確且具體地涵蓋此子選項。若無標竿報告書則填 false',
+        },
+        benchmark_evidence: {
+            type: SchemaType.STRING,
+            description: '【標竿報告書】若 benchmark_covered=true，填入標竿報告書的對應原文（60字以內）；否則填空字串',
         },
     },
-    required: ['option_text', 'is_covered', 'evidence'],
+    required: ['option_text', 'is_covered', 'evidence', 'benchmark_covered', 'benchmark_evidence'],
 };
 
 const scoringItemSchema = {
@@ -426,16 +434,17 @@ const csaScoringRules = `
         ✅ 算明確涵蓋：有清楚文字、數據、政策聲明或流程描述，可直接對應到該子選項
         ❌ 不算明確涵蓋：模糊提及、間接相關、使用了相近但不夠精確的詞彙
 
-步驟 3：將每個子選項填入 sub_options 陣列：
-        - option_text：子選項的內容說明
-        - is_covered：true（明確涵蓋）或 false（未涵蓋）
-        - evidence：若 is_covered=true，填入報告書對應原文（50字以內）；false 則填空字串
+步驟 3：將每個子選項填入 sub_options 陣列，每筆需填寫四個欄位：
+        ① is_covered / evidence：針對「受評報告書」逐一判斷
+        ② benchmark_covered / benchmark_evidence：若有上傳標竿報告書，同樣逐一判斷；若無標竿報告書則全填 false / ""
+        重點：benchmark_evidence 需引用標竿報告書的「具體原文段落或做法描述」，
+              讓使用者清楚看到標竿公司在此子選項上「比受評公司寫得更好」的具體依據。
 
-步驟 4：計算分數：
+步驟 4：計算分數（只根據受評報告書）：
         score = ROUND( (is_covered=true 的子選項數 / sub_options 總數) × 100 )
         例：5 個子選項中有 3 個涵蓋 → score = 60
 
-步驟 5：consistency_analysis 說明整體涵蓋情況，並特別指出未涵蓋的關鍵子選項。`;
+步驟 5：consistency_analysis 說明整體涵蓋情況，並特別指出受評報告書未涵蓋但標竿報告書有涵蓋的關鍵子選項。`;
 
 // ─── Analyze Endpoint ────────────────────────────────────────────────────────
 app.post('/api/analyze', analyzeUpload, async (req: Request, res: Response): Promise<void> => {
@@ -549,7 +558,17 @@ app.post('/api/analyze', analyzeUpload, async (req: Request, res: Response): Pro
             // Criteria text: cap at 150k to avoid overloading input context
             const criteriaText = criteriaByDim[dimCode].substring(0, 150000);
 
+            const hasBenchmarkCtx = !!uploadedBenchmark;
+            const benchmarkInstruction = hasBenchmarkCtx
+                ? `\n【標竿報告書已上傳 — 重要】
+對每個子選項，除了判斷受評報告書外，必須同時閱讀標竿報告書並填寫：
+- benchmark_covered：標竿報告書是否明確涵蓋此子選項
+- benchmark_evidence：若 benchmark_covered=true，填入標竿報告書的「具體原文或做法描述」（60字以內），
+  讓使用者清楚了解標竿公司在此點做得更好的具體內容。`
+                : `\n【無標竿報告書】所有 sub_options 的 benchmark_covered 填 false，benchmark_evidence 填空字串。`;
+
             const sysPrompt = `你是專業 CSA/DJSI ESG 審計 AI。你的任務是針對「${dimName}」(${batchLabel}) 依照 DJSI 真實評分邏輯逐題評分。
+${benchmarkInstruction}
 
 ${csaScoringRules}
 

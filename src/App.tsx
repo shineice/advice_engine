@@ -487,51 +487,133 @@ export default function App() {
                                 </div>
                               </div>
                               {/* Row 2: Sub-options checklist (DJSI logic) */}
-                              {q.sub_options && q.sub_options.length > 0 && (
-                                <div className="mb-3 bg-white rounded-xl border border-slate-200 overflow-hidden">
-                                  <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-100">
-                                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">子選項覆蓋狀態（DJSI 評分依據）</span>
-                                    <span className={cn(
-                                      'text-xs font-bold px-2 py-0.5 rounded-full',
-                                      q.sub_options.filter(o => o.is_covered).length === q.sub_options.length
-                                        ? 'bg-emerald-100 text-emerald-700'
-                                        : q.sub_options.filter(o => o.is_covered).length === 0
-                                          ? 'bg-red-100 text-red-700'
-                                          : 'bg-amber-100 text-amber-700',
-                                    )}>
-                                      {q.sub_options.filter(o => o.is_covered).length} / {q.sub_options.length} 已涵蓋
-                                    </span>
-                                  </div>
-                                  <div className="divide-y divide-slate-50">
-                                    {q.sub_options.map((opt, oi) => (
-                                      <div key={oi} className={cn(
-                                        'flex items-start gap-3 px-4 py-2.5 text-sm',
-                                        opt.is_covered ? 'bg-emerald-50/30' : 'bg-red-50/20',
-                                      )}>
+                              {q.sub_options && q.sub_options.length > 0 && (() => {
+                                const hasBenchmark = q.sub_options.some(o => o.benchmark_covered || o.benchmark_evidence);
+                                const coveredCount = q.sub_options.filter(o => o.is_covered).length;
+                                const benchmarkCoveredCount = q.sub_options.filter(o => o.benchmark_covered).length;
+                                return (
+                                  <div className="mb-3 bg-white rounded-xl border border-slate-200 overflow-hidden">
+                                    {/* Header */}
+                                    <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-100">
+                                      <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                        子選項覆蓋狀態（DJSI 評分依據）
+                                      </span>
+                                      <div className="flex items-center gap-2">
                                         <span className={cn(
-                                          'shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-xs font-bold mt-0.5',
-                                          opt.is_covered ? 'bg-emerald-500' : 'bg-red-400',
+                                          'text-xs font-bold px-2 py-0.5 rounded-full',
+                                          coveredCount === q.sub_options.length ? 'bg-emerald-100 text-emerald-700'
+                                            : coveredCount === 0 ? 'bg-red-100 text-red-700'
+                                            : 'bg-amber-100 text-amber-700',
                                         )}>
-                                          {opt.is_covered ? '✓' : '✗'}
+                                          受評 {coveredCount}/{q.sub_options.length}
                                         </span>
-                                        <div className="flex-1 min-w-0">
+                                        {hasBenchmark && (
                                           <span className={cn(
-                                            'font-medium',
-                                            opt.is_covered ? 'text-slate-700' : 'text-slate-500',
+                                            'text-xs font-bold px-2 py-0.5 rounded-full',
+                                            benchmarkCoveredCount === q.sub_options.length ? 'bg-blue-100 text-blue-700'
+                                              : benchmarkCoveredCount === 0 ? 'bg-slate-100 text-slate-500'
+                                              : 'bg-blue-50 text-blue-600',
                                           )}>
-                                            {opt.option_text}
+                                            標竿 {benchmarkCoveredCount}/{q.sub_options.length}
                                           </span>
-                                          {opt.is_covered && opt.evidence && (
-                                            <p className="mt-0.5 text-xs text-emerald-700 italic leading-relaxed">
-                                              「{opt.evidence}」
-                                            </p>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Column headers (only when benchmark exists) */}
+                                    {hasBenchmark && (
+                                      <div className="grid grid-cols-2 divide-x divide-slate-100 bg-slate-50/60 border-b border-slate-100">
+                                        <div className="px-4 py-1.5 text-xs font-bold text-slate-400">受評報告書</div>
+                                        <div className="px-4 py-1.5 text-xs font-bold text-blue-500 flex items-center gap-1">
+                                          <span>標竿報告書</span>
+                                          {benchmarkCoveredCount > coveredCount && (
+                                            <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-full font-bold">
+                                              +{benchmarkCoveredCount - coveredCount} 項優勢
+                                            </span>
                                           )}
                                         </div>
                                       </div>
-                                    ))}
+                                    )}
+
+                                    {/* Sub-option rows */}
+                                    <div className="divide-y divide-slate-50">
+                                      {q.sub_options.map((opt, oi) => {
+                                        const gap = !opt.is_covered && opt.benchmark_covered; // benchmark better
+                                        return (
+                                          <div key={oi} className={cn(
+                                            'text-sm',
+                                            gap ? 'bg-blue-50/30' : opt.is_covered ? 'bg-emerald-50/20' : 'bg-red-50/10',
+                                          )}>
+                                            {hasBenchmark ? (
+                                              /* Two-column layout when benchmark exists */
+                                              <div className="grid grid-cols-2 divide-x divide-slate-100">
+                                                {/* Main report cell */}
+                                                <div className="flex items-start gap-2.5 px-4 py-2.5">
+                                                  <span className={cn(
+                                                    'shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-0.5',
+                                                    opt.is_covered ? 'bg-emerald-500' : 'bg-red-400',
+                                                  )}>
+                                                    {opt.is_covered ? '✓' : '✗'}
+                                                  </span>
+                                                  <div className="min-w-0">
+                                                    <p className={cn('font-medium leading-snug', opt.is_covered ? 'text-slate-700' : 'text-slate-400 line-through decoration-slate-300')}>
+                                                      {opt.option_text}
+                                                    </p>
+                                                    {opt.is_covered && opt.evidence && (
+                                                      <p className="mt-0.5 text-xs text-emerald-700 italic">「{opt.evidence}」</p>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                                {/* Benchmark cell */}
+                                                <div className="flex items-start gap-2.5 px-4 py-2.5">
+                                                  <span className={cn(
+                                                    'shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-0.5',
+                                                    opt.benchmark_covered ? 'bg-blue-500' : 'bg-slate-300',
+                                                  )}>
+                                                    {opt.benchmark_covered ? '✓' : '✗'}
+                                                  </span>
+                                                  <div className="min-w-0">
+                                                    {opt.benchmark_covered && opt.benchmark_evidence ? (
+                                                      <>
+                                                        {gap && (
+                                                          <span className="text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded mr-1">標竿做得更好</span>
+                                                        )}
+                                                        <p className="text-xs text-blue-800 italic leading-relaxed mt-0.5">
+                                                          「{opt.benchmark_evidence}」
+                                                        </p>
+                                                      </>
+                                                    ) : (
+                                                      <p className="text-xs text-slate-400">—</p>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              /* Single-column layout when no benchmark */
+                                              <div className="flex items-start gap-2.5 px-4 py-2.5">
+                                                <span className={cn(
+                                                  'shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-0.5',
+                                                  opt.is_covered ? 'bg-emerald-500' : 'bg-red-400',
+                                                )}>
+                                                  {opt.is_covered ? '✓' : '✗'}
+                                                </span>
+                                                <div className="min-w-0">
+                                                  <p className={cn('font-medium', opt.is_covered ? 'text-slate-700' : 'text-slate-500')}>
+                                                    {opt.option_text}
+                                                  </p>
+                                                  {opt.is_covered && opt.evidence && (
+                                                    <p className="mt-0.5 text-xs text-emerald-700 italic">「{opt.evidence}」</p>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
                                   </div>
-                                </div>
-                              )}
+                                );
+                              })()}
 
                               {/* Row 3: analysis + evidence */}
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
