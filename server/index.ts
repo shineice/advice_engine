@@ -337,20 +337,56 @@ function extractJson(raw: string): string {
     return trimmed;
 }
 
+/**
+ * When Gemini truncates a JSON array mid-way, try to recover the complete
+ * objects that were already written by cutting at the last valid "}" boundary.
+ */
+function repairTruncatedJson(text: string): string {
+    // Already valid → return as-is
+    try { JSON.parse(text); return text; } catch { /* continue */ }
+
+    // Strategy 1: find the last complete top-level object close "}" and
+    // append the minimal structure needed to close the surrounding arrays/object.
+    // We target the pattern: ...}  followed by ]} or ]} at the end
+    const strategies: Array<(s: string) => string> = [
+        // Close open question array + root object
+        s => { const i = s.lastIndexOf('},'); return i > 0 ? s.slice(0, i + 1) + ']}' : s; },
+        s => { const i = s.lastIndexOf('}'); return i > 0 ? s.slice(0, i + 1) + ']}' : s; },
+        // Already closed array but missing root close
+        s => s.trimEnd().endsWith(']') ? s + '}' : s,
+    ];
+
+    for (const fix of strategies) {
+        try {
+            const candidate = fix(extractJson(text));
+            JSON.parse(candidate);
+            return candidate;
+        } catch { /* try next */ }
+    }
+    return text; // give up, return original for normal error path
+}
+
 function safeParseJson(raw: string, label: string): any {
     const cleaned = extractJson(raw);
+    // First attempt: clean JSON as-is
+    try { return JSON.parse(cleaned); } catch { /* try repair */ }
+
+    // Second attempt: try to repair truncated JSON
+    const repaired = repairTruncatedJson(cleaned);
     try {
-        return JSON.parse(cleaned);
-    } catch (e1) {
-        // Log first 500 chars to help diagnose
-        const preview = cleaned.substring(0, 500);
-        fs.appendFileSync('server_error.log',
-            `[${new Date().toISOString()}] JSON parse failed (${label})\n` +
-            `  raw.length=${raw.length}  cleaned.length=${cleaned.length}\n` +
-            `  preview: ${preview}\n`);
-        console.error(`[ESG Engine] JSON parse failed (${label}). Preview:\n${preview}`);
-        throw new Error(`${label} returned invalid JSON. Raw length: ${raw.length}`);
-    }
+        const result = JSON.parse(repaired);
+        console.warn(`[ESG Engine] JSON repaired (${label}): raw=${raw.length} repaired=${repaired.length}`);
+        return result;
+    } catch { /* fall through to error */ }
+
+    // Log details for diagnosis
+    const preview = cleaned.substring(0, 600);
+    fs.appendFileSync('server_error.log',
+        `[${new Date().toISOString()}] JSON parse failed (${label})\n` +
+        `  raw.length=${raw.length}  cleaned.length=${cleaned.length}\n` +
+        `  preview: ${preview}\n`);
+    console.error(`[ESG Engine] JSON parse failed (${label}). Raw=${raw.length}\n${preview}`);
+    throw new Error(`${label} returned invalid JSON. Raw length: ${raw.length}`);
 }
 
 // ─── Scoring Rules ────────────────────────────────────────────────────────────
@@ -462,29 +498,34 @@ app.post('/api/analyze', analyzeUpload, async (req: Request, res: Response): Pro
         };
 
         // ── Agent 1/2/3: Parallel Dimension Scoring ──────────────────────────
-        const runDimensionAgent = async (dimCode: string) => {
-            const dimName = DIM_NAMES[dimCode];
-            const qList = QUESTIONS[dimCode].map((q, i) => `[${String(i + 1).padStart(2, '0')}] ${q}`).join('\n');
-            const prefix = `G${dimCode === '03' ? '03' : dimCode === '04' ? 'E04' : 'S05'}`;
+        /** Run one dimension scoring call for a given question subset */
+        const runDimBatch = async (
+            dimCode: string, questions: string[], batchLabel: string
+        ) => {
+            const dimName  = DIM_NAMES[dimCode];
             const codePrefix = dimCode === '03' ? 'G03' : dimCode === '04' ? 'E04' : 'S05';
+            const qList    = questions.map((q, i) => `[${String(i + 1).padStart(2, '0')}] ${q}`).join('\n');
 
-            const sysPrompt = `你是專業 ESG 審計 AI。你的任務是針對「${dimName}」進行逐題評分。
+            // Criteria text: cap at 150k to avoid overloading input context
+            const criteriaText = criteriaByDim[dimCode].substring(0, 150000);
+
+            const sysPrompt = `你是專業 ESG 審計 AI。你的任務是針對「${dimName}」(${batchLabel}) 進行逐題評分。
 ${csaScoringRules}
 
 【強制規則】
 - question_code 格式：「${codePrefix} → 題目名稱」
 - dimension 欄位固定填：「${dimName}」
 - question_name：填該題的繁體中文說明（15字以內）
-- 以下所有 ${QUESTIONS[dimCode].length} 題必須全部出現，不可省略。若報告書未提及，score=0，並在各欄填「報告書未揭露此項目」
+- 以下所有 ${questions.length} 題必須全部出現，不可省略。若報告書未提及，score=0，各欄填「報告書未揭露此項目」
 - 各欄字數上限：consistency_analysis ≤ 80字、evidence_excerpt ≤ 60字、standard_requirement ≤ 50字
 - keyword_adjustments 只列出有明確用詞落差的題目（可為空陣列）
 
 【必評題目清單】
 ${qList}
 
-【本維度 CSA ELQ Criteria】
+【本維度 CSA ELQ Criteria（節錄）】
 ---
-${criteriaByDim[dimCode].substring(0, 280000)}
+${criteriaText}
 ---`;
 
             const model = ai.getGenerativeModel({
@@ -494,35 +535,53 @@ ${criteriaByDim[dimCode].substring(0, 280000)}
                     responseMimeType: 'application/json',
                     responseSchema: dimensionSchema as any,
                     temperature: 0.1,
-                    maxOutputTokens: 32768,
+                    maxOutputTokens: 65536,   // max for Flash — avoids truncation
                 },
             });
 
-            const prompt = `請依據上方報告書，對「${dimName}」的所有 ${QUESTIONS[dimCode].length} 題逐一評分。`;
+            const prompt = `請依據上方報告書，對「${dimName}」(${batchLabel}) 的 ${questions.length} 題逐一評分。`;
 
-            // Retry up to 2 times on parse failure
             for (let attempt = 1; attempt <= 2; attempt++) {
                 const response = await model.generateContent(buildParts(prompt));
                 const raw = response.response.text();
                 try {
-                    const parsed = safeParseJson(raw, `Dimension ${dimCode} (attempt ${attempt})`);
-                    console.log(`[ESG Engine] Dim #${dimCode} done — ${parsed.question_level_scoring?.length ?? 0} questions scored.`);
+                    const parsed = safeParseJson(raw, `${batchLabel} (attempt ${attempt})`);
+                    console.log(`[ESG Engine] ${batchLabel} done — ${parsed.question_level_scoring?.length ?? 0} questions scored.`);
                     return parsed;
                 } catch (err) {
                     if (attempt === 2) throw err;
-                    console.warn(`[ESG Engine] Dim #${dimCode} parse failed on attempt ${attempt}, retrying…`);
+                    console.warn(`[ESG Engine] ${batchLabel} parse failed (attempt ${attempt}), retrying…`);
                     await new Promise(r => setTimeout(r, 2000));
                 }
             }
         };
 
-        // Run 3 dimension agents in parallel
-        const [dim03, dim04, dim05] = await Promise.all([
-            runDimensionAgent('03'),
-            runDimensionAgent('04'),
-            runDimensionAgent('05'),
+        /** Merge two batch results into one dimension result */
+        const mergeBatches = (a: any, b: any) => ({
+            dimension_score: Math.round(((a.dimension_score ?? 0) + (b.dimension_score ?? 0)) / 2),
+            question_level_scoring: [
+                ...(a.question_level_scoring ?? []),
+                ...(b.question_level_scoring ?? []),
+            ],
+            keyword_adjustments: [
+                ...(a.keyword_adjustments ?? []),
+                ...(b.keyword_adjustments ?? []),
+            ],
+        });
+
+        // D04 is the largest dimension (39 questions) — split into 2 batches of ~20
+        const D04_A = QUESTIONS['04'].slice(0, 20);
+        const D04_B = QUESTIONS['04'].slice(20);
+
+        // Run 4 batches in parallel (#03, D04-A, D04-B, #05)
+        const [dim03, dim04a, dim04b, dim05] = await Promise.all([
+            runDimBatch('03', QUESTIONS['03'], 'Dim #03'),
+            runDimBatch('04', D04_A,           'Dim #04-A'),
+            runDimBatch('04', D04_B,           'Dim #04-B'),
+            runDimBatch('05', QUESTIONS['05'], 'Dim #05'),
         ]);
-        console.log('[ESG Engine] All 3 dimension agents done. Running synthesis + web-search agents in parallel...');
+        const dim04 = mergeBatches(dim04a, dim04b);
+        console.log(`[ESG Engine] All dimension agents done (D04: ${dim04.question_level_scoring.length} questions). Running synthesis + web-search...`);
 
         // ── Agent 4: Synthesis ────────────────────────────────────────────────
         const allQuestions = [
