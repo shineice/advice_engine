@@ -19,6 +19,11 @@ import {
   ChevronRight,
   SlidersHorizontal,
   X,
+  Download,
+  CheckSquare,
+  Square,
+  Sparkles,
+  Users,
 } from 'lucide-react';
 import {
   Radar,
@@ -96,6 +101,10 @@ export default function App() {
   const [scoringDimFilter, setScoringDimFilter] = useState<string>('all');
   const [scoringScoreFilter, setScoringScoreFilter] = useState<'all' | 'low' | 'mid' | 'high'>('all');
   const [scoringSearch, setScoringSearch] = useState('');
+  // Question detail drawer
+  const [selectedQuestion, setSelectedQuestion] = useState<ESGAnalysisResult['question_level_scoring'][0] | null>(null);
+  // Keyword approve state: set of approved indices
+  const [approvedKeywords, setApprovedKeywords] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     loadHistory();
@@ -200,7 +209,115 @@ export default function App() {
   const reset = () => {
     setFile(null); setBenchmarkFile(null); setExtraFiles([]);
     setUrlInputs(['']); setUrlTexts([]); setUrlErrors({});
-    setResult(null); setError(null); setIsAnalyzing(false); setAnalyzeStep('');
+    setResult(null); setError(null); setIsAnalyzing(false);
+    setSelectedQuestion(null); setApprovedKeywords(new Set());
+  };
+
+  // ─── Helpers for question ↔ improvement matching ─────────────────────────
+  const findImprovementForQ = (q: ESGAnalysisResult['question_level_scoring'][0]) => {
+    if (!result) return undefined;
+    const qName = q.question_name.toLowerCase();
+    const qCode = (q.question_code.split('→')[1] ?? '').trim().toLowerCase();
+    return result.improvement_path.improvement_actions.find(a => {
+      const t = (a.topic ?? '').toLowerCase();
+      return t.includes(qName.substring(0, 6)) || qName.includes(t.substring(0, 6)) ||
+        (qCode.length > 4 && t.includes(qCode.substring(0, 6)));
+    });
+  };
+
+  const findSuggestedTextForQ = (q: ESGAnalysisResult['question_level_scoring'][0]) => {
+    if (!result) return undefined;
+    const qName = q.question_name.toLowerCase();
+    return result.suggested_disclosure_text.suggested_text.find(t => {
+      const topic = (t.topic ?? '').toLowerCase();
+      return topic.includes(qName.substring(0, 6)) || qName.includes(topic.substring(0, 6));
+    });
+  };
+
+  // ─── Export: generate markdown improvement report ─────────────────────────
+  const exportReport = () => {
+    if (!result) return;
+    const ds = result.dashboard_summary;
+    const lines: string[] = [
+      `# ESG 報告書改善指南`,
+      ``,
+      `> 分析框架：${ds.framework} ｜ 整體得分：**${ds.overall_score} / 100**`,
+      ``,
+      `## 維度得分`,
+      ...Object.entries(ds.dimension_scores).map(([k, v]) => `- ${k}：${v} 分`),
+      ``,
+    ];
+
+    // Section 1: Approved keyword changes
+    const adjustments = result.keyword_gap_analysis?.adjustments ?? [];
+    const approvedList = adjustments.filter((_, i) => approvedKeywords.has(i));
+    if (approvedList.length > 0) {
+      lines.push(`## 一、已覆核用詞校準（${approvedList.length} 項）`);
+      lines.push(``);
+      lines.push(`| 關聯題項 | 現有用語 | 建議替換 | 說明 |`);
+      lines.push(`|---------|--------|--------|------|`);
+      approvedList.forEach(a => {
+        lines.push(`| \`${a.question_code}\` | ~~${a.current_wording}~~ | **${a.required_keyword}** | ${a.explanation} |`);
+      });
+      lines.push(``);
+    }
+
+    // Section 2: Suggested disclosure texts (weak questions ≤ 50)
+    const weakSuggested = result.suggested_disclosure_text.suggested_text;
+    if (weakSuggested.length > 0) {
+      lines.push(`## 二、建議新增揭露文本`);
+      lines.push(``);
+      weakSuggested.forEach(t => {
+        lines.push(`### ${t.topic}`);
+        lines.push(``);
+        lines.push(`**中文版本**`);
+        lines.push(``);
+        lines.push(t.text_zh);
+        lines.push(``);
+        lines.push(`**English Version**`);
+        lines.push(``);
+        lines.push(`*${t.text_en}*`);
+        lines.push(``);
+      });
+    }
+
+    // Section 3: Improvement actions + peer benchmarks
+    const actions = result.improvement_path.improvement_actions;
+    if (actions.length > 0) {
+      lines.push(`## 三、改善行動方案與同業揭露參考`);
+      lines.push(``);
+      actions.forEach((a, i) => {
+        lines.push(`### ${i + 1}. ${a.topic}`);
+        lines.push(``);
+        lines.push(`**現況缺口：** ${a.gap}`);
+        lines.push(``);
+        lines.push(`**建議行動：** ${a.recommendation_zh}`);
+        if (a.recommendation_en) {
+          lines.push(``);
+          lines.push(`> *${a.recommendation_en}*`);
+        }
+        if (a.benchmark_reference) {
+          lines.push(``);
+          lines.push(`**同業標竿（${a.benchmark_reference.company_name}）：**`);
+          lines.push(``);
+          lines.push(`> "${a.benchmark_reference.excerpt}"`);
+          lines.push(``);
+          lines.push(`學習重點：${a.benchmark_reference.explanation}`);
+        }
+        lines.push(``);
+      });
+    }
+
+    lines.push(`---`);
+    lines.push(`*由 AI ESG 引擎（S&P Global CSA ELQ 框架）自動產出*`);
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ESG_改善指南_${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // ─── Loading Screen ──────────────────────────────────────────────────────
@@ -521,7 +638,10 @@ export default function App() {
                         {/* Questions */}
                         <div className="divide-y divide-slate-100 bg-white">
                           {qs.map((q, i) => (
-                            <div key={i} className="px-6 py-5 hover:bg-slate-50/40 transition-colors">
+                            <div key={i}
+                              className={cn('px-6 py-5 transition-colors',
+                                q.score < 75 ? 'cursor-pointer hover:bg-amber-50/30 group' : 'hover:bg-slate-50/40')}
+                              onClick={() => setSelectedQuestion(q)}>
                               {/* Row 1: code + name + score */}
                               <div className="flex items-start gap-4 mb-3">
                                 <code className="text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded break-all leading-relaxed shrink-0 max-w-[220px]">
@@ -535,14 +655,21 @@ export default function App() {
                                     </p>
                                   )}
                                 </div>
-                                <div className={cn(
-                                  'shrink-0 w-14 h-14 rounded-xl flex flex-col items-center justify-center font-bold',
-                                  q.score >= 75 ? 'bg-emerald-100 text-emerald-700'
-                                    : q.score >= 51 ? 'bg-amber-100 text-amber-700'
-                                    : 'bg-red-100 text-red-700',
-                                )}>
-                                  <span className="text-xl leading-none">{q.score}</span>
-                                  <span className="text-xs opacity-60">/100</span>
+                                <div className="shrink-0 flex flex-col items-end gap-1.5">
+                                  <div className={cn(
+                                    'w-14 h-14 rounded-xl flex flex-col items-center justify-center font-bold',
+                                    q.score >= 75 ? 'bg-emerald-100 text-emerald-700'
+                                      : q.score >= 51 ? 'bg-amber-100 text-amber-700'
+                                      : 'bg-red-100 text-red-700',
+                                  )}>
+                                    <span className="text-xl leading-none">{q.score}</span>
+                                    <span className="text-xs opacity-60">/100</span>
+                                  </div>
+                                  {q.score < 75 && (
+                                    <span className="text-[10px] text-amber-600 font-semibold opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap flex items-center gap-0.5">
+                                      查看改善 <ChevronRight className="w-3 h-3" />
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                               {/* Row 2: Sub-options checklist (DJSI logic) */}
@@ -712,22 +839,44 @@ export default function App() {
                 {/* Keyword Adjustments */}
                 {result.keyword_gap_analysis?.adjustments?.length > 0 && (
                   <div className="bg-white p-8 rounded-2xl shadow-sm border border-amber-200">
-                    <h3 className="text-lg font-bold text-amber-900 mb-2 flex items-center gap-2">
-                      <span>✍️</span>純文字與關鍵字校準
-                      <span className="text-sm font-normal text-amber-600">Wording & Terminology Adjustments</span>
-                    </h3>
+                    <div className="flex items-start justify-between gap-4 mb-2">
+                      <h3 className="text-lg font-bold text-amber-900 flex items-center gap-2">
+                        <span>✍️</span>純文字與關鍵字校準
+                        <span className="text-sm font-normal text-amber-600">Wording & Terminology Adjustments</span>
+                      </h3>
+                      <span className={cn('shrink-0 text-xs font-bold px-3 py-1.5 rounded-full',
+                        approvedKeywords.size > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400')}>
+                        已覆核 {approvedKeywords.size} / {result.keyword_gap_analysis.adjustments.length}
+                      </span>
+                    </div>
                     <p className="text-sm text-amber-700 mb-6">
-                      以下項目並非制度缺失，而是報告書中使用的意涵與準則字眼不夠吻合。建議直接抽換以下字詞以提高 CSA 機器審查的命中率。
+                      以下項目並非制度缺失，而是報告書中使用的意涵與準則字眼不夠吻合。逐一覆核後可一鍵匯出改善指南。
                     </p>
                     <div className="space-y-4">
                       {result.keyword_gap_analysis.adjustments.map((adj, i) => (
-                        <div key={i} className="rounded-xl border border-amber-100 bg-amber-50/30 overflow-hidden">
-                          {/* Header: question code */}
-                          <div className="px-4 py-2 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
+                        <div key={i} className={cn('rounded-xl border overflow-hidden transition-colors',
+                          approvedKeywords.has(i) ? 'border-emerald-300 bg-emerald-50/20' : 'border-amber-100 bg-amber-50/30')}>
+                          {/* Header: question code + approve button */}
+                          <div className={cn('px-4 py-2 border-b flex items-center gap-2',
+                            approvedKeywords.has(i) ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-100')}>
                             <span className="text-xs font-bold text-amber-700">關聯題項</span>
-                            <code className="text-xs font-mono text-amber-600 bg-white border border-amber-200 px-2 py-0.5 rounded break-all">
+                            <code className="text-xs font-mono text-amber-600 bg-white border border-amber-200 px-2 py-0.5 rounded break-all flex-1">
                               {adj.question_code}
                             </code>
+                            <button
+                              onClick={() => setApprovedKeywords(prev => {
+                                const next = new Set(prev);
+                                next.has(i) ? next.delete(i) : next.add(i);
+                                return next;
+                              })}
+                              className={cn('shrink-0 flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-lg transition-all',
+                                approvedKeywords.has(i)
+                                  ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                                  : 'bg-white border border-amber-300 text-amber-700 hover:bg-amber-100')}>
+                              {approvedKeywords.has(i)
+                                ? <><CheckSquare className="w-3.5 h-3.5" />已覆核</>
+                                : <><Square className="w-3.5 h-3.5" />覆核</>}
+                            </button>
                           </div>
                           {/* Body: 3 columns on md+ */}
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-0 divide-y md:divide-y-0 md:divide-x divide-amber-100">
@@ -766,6 +915,23 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Export Button */}
+                <div className="flex items-center justify-between bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl p-5">
+                  <div>
+                    <h4 className="font-bold text-emerald-900 flex items-center gap-2">
+                      <Download className="w-4 h-4" />一鍵匯出改善指南
+                    </h4>
+                    <p className="text-xs text-emerald-700 mt-0.5">
+                      包含已覆核用詞校準、建議揭露文本、同業揭露參考
+                      {approvedKeywords.size > 0 && ` （${approvedKeywords.size} 項已覆核）`}
+                    </p>
+                  </div>
+                  <button onClick={exportReport}
+                    className="shrink-0 flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md shadow-emerald-200 transition-all">
+                    <Download className="w-4 h-4" />匯出 Markdown
+                  </button>
+                </div>
 
                 {/* Improvement Actions */}
                 <div className="grid grid-cols-1 gap-6">
@@ -829,6 +995,149 @@ export default function App() {
             )}
           </AnimatePresence>
         </main>
+
+        {/* ─── Question Detail Drawer ──────────────────────────────────────── */}
+        <AnimatePresence>
+          {selectedQuestion && (() => {
+            const q = selectedQuestion;
+            const imp = findImprovementForQ(q);
+            const sug = findSuggestedTextForQ(q);
+            const coveredCount = q.sub_options?.filter(o => o.is_covered).length ?? 0;
+            const totalCount = q.sub_options?.length ?? 0;
+            return (
+              <motion.div key="drawer-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="fixed inset-0 z-50 flex justify-end" onClick={() => setSelectedQuestion(null)}>
+                <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 280 }}
+                  className="relative w-full max-w-2xl bg-white shadow-2xl overflow-y-auto flex flex-col"
+                  onClick={e => e.stopPropagation()}>
+
+                  {/* Drawer Header */}
+                  <div className={cn('sticky top-0 z-10 px-6 py-4 border-b flex items-start gap-4',
+                    q.score >= 75 ? 'bg-emerald-50 border-emerald-200' : q.score >= 51 ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-100')}>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <code className="text-xs text-slate-400 bg-white/80 border border-slate-200 px-2 py-0.5 rounded font-mono">{q.question_code}</code>
+                        <span className="text-xs text-slate-400">{q.dimension}</span>
+                      </div>
+                      <h3 className="text-lg font-bold text-slate-900">{q.question_name}</h3>
+                      {q.standard_requirement && (
+                        <p className="text-xs text-slate-500 mt-1">{q.standard_requirement}</p>
+                      )}
+                    </div>
+                    <div className={cn('shrink-0 w-16 h-16 rounded-xl flex flex-col items-center justify-center font-bold text-xl',
+                      q.score >= 75 ? 'bg-emerald-500 text-white' : q.score >= 51 ? 'bg-amber-400 text-white' : 'bg-red-500 text-white')}>
+                      {q.score}
+                      <span className="text-xs font-normal opacity-80">/100</span>
+                    </div>
+                    <button onClick={() => setSelectedQuestion(null)}
+                      className="shrink-0 p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white/60 transition-colors">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 p-6 space-y-6">
+                    {/* Sub-options */}
+                    {q.sub_options && q.sub_options.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-bold text-slate-700">CSA 子選項覆蓋狀況</h4>
+                          <span className={cn('text-xs font-bold px-2 py-0.5 rounded-full',
+                            coveredCount === totalCount ? 'bg-emerald-100 text-emerald-700'
+                              : coveredCount === 0 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700')}>
+                            {coveredCount}/{totalCount} 已涵蓋
+                          </span>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 overflow-hidden">
+                          {q.sub_options.map((opt, oi) => (
+                            <div key={oi} className={cn('flex items-start gap-3 px-4 py-3 border-b last:border-0',
+                              opt.is_covered ? 'bg-emerald-50/30' : 'bg-red-50/20')}>
+                              <span className={cn('shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold mt-0.5',
+                                opt.is_covered ? 'bg-emerald-500' : 'bg-red-400')}>
+                                {opt.is_covered ? '✓' : '✗'}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className={cn('text-sm font-medium', opt.is_covered ? 'text-slate-700' : 'text-slate-500')}>{opt.option_text}</p>
+                                {opt.is_covered && opt.evidence && (
+                                  <p className="text-xs text-emerald-700 italic mt-0.5">「{opt.evidence}」</p>
+                                )}
+                                {!opt.is_covered && opt.benchmark_covered && opt.benchmark_evidence && (
+                                  <div className="mt-1 flex items-start gap-1.5">
+                                    <span className="text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded shrink-0">標竿做得更好</span>
+                                    <p className="text-xs text-blue-700 italic">「{opt.benchmark_evidence}」</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {q.consistency_analysis && (
+                          <p className="text-xs text-slate-500 mt-2 leading-relaxed px-1">
+                            <span className="font-semibold">一致性分析：</span>{q.consistency_analysis}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Peer disclosure examples */}
+                    {imp?.benchmark_reference && (
+                      <div className="bg-blue-50 rounded-xl border border-blue-200 p-5">
+                        <h4 className="flex items-center gap-2 text-sm font-bold text-blue-900 mb-3">
+                          <Users className="w-4 h-4" />同業揭露參考（{imp.benchmark_reference.company_name}）
+                        </h4>
+                        <div className="bg-white rounded-lg border border-blue-100 border-l-4 border-l-blue-400 p-3 text-sm italic text-slate-600 mb-2">
+                          "{imp.benchmark_reference.excerpt}"
+                        </div>
+                        <p className="text-xs text-blue-800 leading-relaxed">
+                          <span className="font-bold">學習重點：</span>{imp.benchmark_reference.explanation}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Improvement recommendation */}
+                    {imp && (
+                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-5">
+                        <h4 className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-3">
+                          <Lightbulb className="w-4 h-4 text-amber-500" />改善建議
+                        </h4>
+                        <p className="text-sm text-slate-700 leading-relaxed mb-3">{imp.recommendation_zh}</p>
+                        {imp.recommendation_en && (
+                          <p className="text-xs text-slate-400 italic font-mono leading-relaxed">{imp.recommendation_en}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Suggested disclosure text */}
+                    {sug && (
+                      <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5">
+                        <h4 className="flex items-center gap-2 text-sm font-bold text-emerald-800 mb-3">
+                          <Sparkles className="w-4 h-4" />AI 建議揭露文本
+                        </h4>
+                        <div className="space-y-3">
+                          <div>
+                            <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mb-1">中文版本</div>
+                            <p className="text-sm text-slate-700 leading-relaxed bg-white rounded-lg border border-emerald-100 p-3">{sug.text_zh}</p>
+                          </div>
+                          <div>
+                            <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mb-1">English Version</div>
+                            <p className="text-xs text-slate-500 italic font-mono leading-relaxed bg-white rounded-lg border border-emerald-100 p-3">{sug.text_en}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {!imp && !sug && q.score >= 75 && (
+                      <div className="text-center py-8 text-slate-400">
+                        <CheckCircle2 className="w-10 h-10 mx-auto mb-2 text-emerald-400" />
+                        <p className="text-sm">此題已達標（{q.score} 分），表現良好</p>
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              </motion.div>
+            );
+          })()}
+        </AnimatePresence>
       </div>
     );
   }
