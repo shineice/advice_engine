@@ -14,7 +14,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
-import { CRITERION_WEIGHTS, QUESTIONS, extractJson, repairTruncatedJson, safeParseJson, calculateCSAWeightedScore } from './utils.js';
+import { CRITERION_WEIGHTS, QUESTIONS, extractJson, repairTruncatedJson, calculateCSAWeightedScore } from './utils.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
