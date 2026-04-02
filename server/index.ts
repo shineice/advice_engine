@@ -151,9 +151,9 @@ function calculateCSAWeightedScore(allQuestions: any[]): {
     return {
         overall_score: Math.min(100, Math.round(overall)),
         dimension_scores: {
-            d03: Math.min(100, Math.round((dimRaw['03'] / D_WEIGHTS['03']) * 100) / 100),
-            d04: Math.min(100, Math.round((dimRaw['04'] / D_WEIGHTS['04']) * 100) / 100),
-            d05: Math.min(100, Math.round((dimRaw['05'] / D_WEIGHTS['05']) * 100) / 100),
+            d03: Math.min(100, Math.round(dimRaw['03'] / D_WEIGHTS['03'])),
+            d04: Math.min(100, Math.round(dimRaw['04'] / D_WEIGHTS['04'])),
+            d05: Math.min(100, Math.round(dimRaw['05'] / D_WEIGHTS['05'])),
         },
         criterion_scores,
     };

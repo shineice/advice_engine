@@ -87,7 +87,6 @@ export default function App() {
   const [urlErrors, setUrlErrors] = useState<Record<number, string>>({});
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analyzeStep, setAnalyzeStep] = useState('');
   const [result, setResult] = useState<ESGAnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'summary' | 'scoring' | 'improvement'>('summary');
@@ -139,9 +138,7 @@ export default function App() {
     }
     setIsAnalyzing(true);
     setError(null);
-    setAnalyzeStep('上傳檔案並等待 Gemini 處理...');
     try {
-      setAnalyzeStep('Agent 1-3 並行評分 (#03 / #04 / #05)...');
       const analysisResult = await analyzeESGReport(
         mainFile,
         optionalRefFile || undefined,
@@ -159,7 +156,6 @@ export default function App() {
       }
     } finally {
       setIsAnalyzing(false);
-      setAnalyzeStep('');
     }
   };
 
@@ -367,6 +363,11 @@ export default function App() {
             {/* Summary Tab */}
             {activeTab === 'summary' && (
               <motion.div key="summary" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-8">
+                {result.executive_diagnosis.summary && (
+                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <p className="text-slate-600 leading-relaxed">{result.executive_diagnosis.summary}</p>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
                     <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
